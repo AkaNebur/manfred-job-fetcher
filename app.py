@@ -13,7 +13,7 @@ from scheduler import initialize_scheduler # Import scheduler initializer
 
 # --- Logging Setup ---
 # Configure logging early
-log_level_str = os.getenv('LOG_LEVEL', 'INFO').upper()
+log_level_str = os.getenv('LOG_LEVEL', 'DEBUG').upper()
 log_level = getattr(logging, log_level_str, logging.INFO)
 
 logging.basicConfig(
