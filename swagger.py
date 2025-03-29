@@ -43,6 +43,14 @@ def setup_swagger(app):
                 "description": "Operations for persisting job offers data"
             },
             {
+                "name": "Data Processing",
+                "description": "Operations for processing job offers data"
+            },
+            {
+                "name": "Notifications",
+                "description": "Operations for sending notifications"
+            },
+            {
                 "name": "System",
                 "description": "System health check"
             }

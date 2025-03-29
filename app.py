@@ -18,6 +18,7 @@ CONFIG = {
     'MAX_RETRIES': int(os.getenv('MAX_RETRIES', '3')),
     'RETRY_BACKOFF': float(os.getenv('RETRY_BACKOFF', '0.5')),
     'DISCORD_WEBHOOK_URL': os.getenv('DISCORD_WEBHOOK_URL', ''),
+    'BUILD_ID_HASH': os.getenv('BUILD_ID_HASH', 'BIDHCAYe6i8X-XyfefcMo'),
 }
 
 # --- Logging Setup ---
@@ -42,6 +43,192 @@ adapter = HTTPAdapter(max_retries=retry_strategy)
 http_session = requests.Session()
 http_session.mount("http://", adapter)
 http_session.mount("https://", adapter)
+
+# --- Job Details Fetching and Processing ---
+def fetch_job_details(offer_id, slug):
+    """
+    Fetch detailed information for a specific job offer.
+    
+    Args:
+        offer_id (int): The ID of the job offer
+        slug (str): The URL-friendly slug of the job offer
+    
+    Returns:
+        dict: The detailed job information or None if the request failed
+    """
+    # Get the pattern with BUILD_ID_HASH already interpolated or use default
+    detail_endpoint_pattern = os.getenv(
+        'DETAIL_ENDPOINT_PATTERN', 
+        f"https://www.getmanfred.com/_next/data/{CONFIG['BUILD_ID_HASH']}/es/job-offers/{{offer_id}}/{{offer_slug}}.json"
+    )
+    
+    # Format the endpoint URL
+    endpoint_url = detail_endpoint_pattern.format(offer_id=offer_id, offer_slug=slug)
+    
+    logger.info(f"Fetching job details for offer ID {offer_id} from {endpoint_url}")
+    
+    # Make the API request
+    response = _make_api_request(endpoint_url)
+    
+    if not response:
+        logger.error(f"Failed to fetch job details for offer ID {offer_id}")
+        return None
+    
+    try:
+        data = response.json()
+        # The actual job offer details are nested under pageProps -> offer
+        if 'pageProps' in data and 'offer' in data['pageProps']:
+            return data['pageProps']['offer']
+        else:
+            logger.error(f"Unexpected response format for job details, offer ID {offer_id}")
+            return None
+    except Exception as e:
+        logger.error(f"Error parsing job details for offer ID {offer_id}: {e}")
+        return None
+
+def store_job_skills(offer_id, skills_data):
+    """
+    Store the skills information for a job offer in the database.
+    
+    Args:
+        offer_id (int): The ID of the job offer
+        skills_data (dict): The skills data containing 'must', 'nice', and 'extra' categories
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not skills_data:
+        logger.warning(f"No skills data provided for offer ID {offer_id}")
+        return False
+    
+    try:
+        with get_db_conn() as conn:
+            # First, delete any existing skills for this offer
+            conn.execute("DELETE FROM job_skills WHERE offer_id = ?", (offer_id,))
+            
+            # Insert new skills
+            for category in ['must', 'nice', 'extra']:
+                if category in skills_data and skills_data[category]:
+                    for skill in skills_data[category]:
+                        conn.execute(
+                            """
+                            INSERT INTO job_skills 
+                            (offer_id, category, skill_name, skill_icon, skill_level, skill_desc)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            """, 
+                            (
+                                offer_id,
+                                category,
+                                skill.get('skill', ''),
+                                skill.get('icon', ''),
+                                skill.get('level', 0),
+                                skill.get('desc', '')
+                            )
+                        )
+            
+            # Mark the job offer as having skills retrieved
+            conn.execute(
+                "UPDATE job_offers SET skills_retrieved = 1 WHERE offer_id = ?",
+                (offer_id,)
+            )
+            
+            conn.commit()
+            logger.info(f"Successfully stored skills for offer ID {offer_id}")
+            return True
+    except Exception as e:
+        logger.error(f"Error storing skills for offer ID {offer_id}: {e}")
+        return False
+
+def get_job_skills(offer_id):
+    """
+    Retrieve the skills for a specific job offer from the database.
+    
+    Args:
+        offer_id (int): The ID of the job offer
+    
+    Returns:
+        dict: A dictionary with 'must', 'nice', and 'extra' categories containing skills
+    """
+    result = {
+        'must': [],
+        'nice': [],
+        'extra': []
+    }
+    
+    try:
+        with get_db_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT category, skill_name, skill_icon, skill_level, skill_desc
+                FROM job_skills
+                WHERE offer_id = ?
+                ORDER BY category, skill_name
+                """,
+                (offer_id,)
+            )
+            
+            for row in cursor.fetchall():
+                category, name, icon, level, desc = row
+                if category in result:
+                    result[category].append({
+                        'skill': name,
+                        'icon': icon,
+                        'level': level,
+                        'desc': desc
+                    })
+            
+            return result
+    except Exception as e:
+        logger.error(f"Error retrieving skills for offer ID {offer_id}: {e}")
+        return result
+
+def process_pending_job_details():
+    """
+    Process job offers that don't have detailed skills information yet.
+    Fetches details for each pending job offer and stores the skills.
+    
+    Returns:
+        int: Number of job offers successfully processed
+    """
+    processed_count = 0
+    
+    try:
+        with get_db_conn() as conn:
+            cursor = conn.cursor()
+            # Get job offers without skills information
+            cursor.execute(
+                """
+                SELECT offer_id, slug
+                FROM job_offers
+                WHERE skills_retrieved = 0
+                LIMIT 10  -- Process in batches to avoid overloading
+                """
+            )
+            
+            pending_offers = cursor.fetchall()
+            
+            for offer_id, slug in pending_offers:
+                # Skip if slug is missing
+                if not slug:
+                    logger.warning(f"Skipping job details fetch for offer ID {offer_id} due to missing slug")
+                    continue
+                
+                # Fetch job details
+                job_details = fetch_job_details(offer_id, slug)
+                
+                if job_details and 'skillsSectionData' in job_details and 'skills' in job_details['skillsSectionData']:
+                    # Extract and store skills
+                    skills_data = job_details['skillsSectionData']['skills']
+                    if store_job_skills(offer_id, skills_data):
+                        processed_count += 1
+                else:
+                    logger.warning(f"Failed to extract skills data for offer ID {offer_id}")
+            
+            return processed_count
+    except Exception as e:
+        logger.error(f"Error processing pending job details: {e}")
+        return processed_count
 
 # --- Discord Webhook Integration ---
 def send_discord_webhook(offer):
@@ -94,6 +281,32 @@ def send_discord_webhook(offer):
         if company_data and 'logoDark' in company_data and 'url' in company_data['logoDark']:
             logo_url = company_data['logoDark']['url']
         
+        # Get skills information if available
+        skills_fields = []
+        
+        # Try to get skills from the database
+        skills_data = get_job_skills(offer_id)
+        
+        # Add "Must Have" skills field
+        if skills_data.get('must'):
+            must_have_skills = ", ".join([s.get('skill', '') for s in skills_data['must']])
+            if must_have_skills:
+                skills_fields.append({
+                    "name": "🔒 Must Have Skills",
+                    "value": must_have_skills,
+                    "inline": False
+                })
+        
+        # Add "Nice to Have" skills field
+        if skills_data.get('nice'):
+            nice_to_have_skills = ", ".join([s.get('skill', '') for s in skills_data['nice']])
+            if nice_to_have_skills:
+                skills_fields.append({
+                    "name": "✨ Nice to Have Skills",
+                    "value": nice_to_have_skills,
+                    "inline": False
+                })
+        
         # Create Discord embed
         embed = {
             "title": f"{position} at {company_name}",
@@ -102,7 +315,8 @@ def send_discord_webhook(offer):
             "timestamp": datetime.now().isoformat(),
             "footer": {
                 "text": "Via Manfred Job Fetcher"
-            }
+            },
+            "fields": skills_fields
         }
         
         # Add thumbnail if logo is available
@@ -171,8 +385,8 @@ def get_db_conn():
     try:
         # Use a timeout for connection attempts
         conn = sqlite3.connect(db_path, timeout=10)
-        # Enable foreign key constraints if needed (not currently used)
-        # conn.execute("PRAGMA foreign_keys = ON")
+        # Enable foreign key constraints
+        conn.execute("PRAGMA foreign_keys = ON")
         yield conn
     except Exception as e:
         logger.error(f"Database connection error to {db_path}: {e}")
@@ -225,7 +439,23 @@ def init_db():
                 company_logo_dark_url TEXT,           -- New column for dark logo URL
                 slug TEXT,                            -- New column for offer slug
                 timestamp TIMESTAMP NOT NULL,
-                notification_sent BOOLEAN DEFAULT 0    -- Flag for tracking webhook notifications
+                notification_sent BOOLEAN DEFAULT 0,   -- Flag for tracking webhook notifications
+                skills_retrieved BOOLEAN DEFAULT 0     -- Flag for tracking if detailed skills were retrieved
+            )
+            ''')
+            
+            # Create table for job skills
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS job_skills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                offer_id INTEGER NOT NULL,
+                category TEXT NOT NULL,               -- 'must', 'nice', or 'extra'
+                skill_name TEXT NOT NULL,
+                skill_icon TEXT,
+                skill_level INTEGER,
+                skill_desc TEXT,
+                FOREIGN KEY (offer_id) REFERENCES job_offers(offer_id) ON DELETE CASCADE,
+                UNIQUE(offer_id, category, skill_name)
             )
             ''')
 
@@ -238,6 +468,9 @@ def init_db():
             
             # Add slug column if it's missing
             _add_column_if_not_exists(cursor, 'job_offers', 'slug', 'TEXT')
+            
+            # Add skills_retrieved flag if it's missing
+            _add_column_if_not_exists(cursor, 'job_offers', 'skills_retrieved', 'BOOLEAN DEFAULT 0')
 
             conn.commit()
             logger.info("Database initialized/verified successfully.")
@@ -390,6 +623,9 @@ def store_offers():
                 webhook_sent:
                   type: integer
                   example: 5
+                skills_processed:
+                  type: integer
+                  example: 3
                 timestamp:
                   type: string
                   format: date-time
@@ -498,8 +734,8 @@ def store_offers():
                     insert_sql = """
                         INSERT INTO job_offers
                         (offer_id, position, company_name, remote_percentage, salary_from, salary_to,
-                         locations, company_logo_dark_url, slug, timestamp, notification_sent)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                         locations, company_logo_dark_url, slug, timestamp, notification_sent, skills_retrieved)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
                     """
                     # Note: For INSERT, offer_id is first in the VALUES list
                     cursor.execute(insert_sql, (offer_id,) + offer_data[:-1]) # Reorder tuple for INSERT
@@ -541,7 +777,12 @@ def store_offers():
             "message": f"Failed to store offers due to unexpected error: {str(e)}"
         }), 500
 
-    # 4. Send new offers to Discord webhook
+    # 4. Process skills for new offers (limited to avoid API overload)
+    skills_processed = 0
+    if new_offers:
+        skills_processed = process_pending_job_details()
+
+    # 5. Send new offers to Discord webhook
     webhook_sent = 0
     if new_offers and CONFIG['DISCORD_WEBHOOK_URL']:
         webhook_sent = send_webhook_batch(new_offers)
@@ -560,15 +801,183 @@ def store_offers():
                 logger.error(f"Error updating notification status: {e}")
                 # Continue anyway - this is not critical
 
-    # 5. Return Success Summary
+    # 6. Return Success Summary
     return jsonify({
         "status": "success",
         "total_fetched": total_fetched,
         "new_offers": new_count,
         "updated_offers": updated_count,
         "webhook_sent": webhook_sent,
+        "skills_processed": skills_processed,
         "timestamp": timestamp.isoformat()
     })
+
+@app.route('/process-job-details', methods=['GET'])
+def process_job_details_endpoint():
+    """
+    Process job offers without detailed skills information.
+    ---
+    tags:
+      - Data Processing
+    summary: Process job offers to fetch and store detailed skills information
+    description: Finds job offers that don't have skills information yet, fetches their detailed data from the Manfred API, and stores their skills in the database.
+    responses:
+      200:
+        description: Successfully processed job offers.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: success
+                processed_count:
+                  type: integer
+                  example: 5
+                timestamp:
+                  type: string
+                  format: date-time
+      500:
+        description: Error processing job offers.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: error
+                message:
+                  type: string
+                  example: Failed to process job offers
+    """
+    logger.info("Request received to process pending job details")
+    
+    try:
+        # Process pending job offers
+        processed_count = process_pending_job_details()
+        
+        return jsonify({
+            "status": "success",
+            "processed_count": processed_count,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.exception(f"Error processing job details: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to process job details: {str(e)}"
+        }), 500
+
+@app.route('/job-skills/<int:offer_id>', methods=['GET'])
+def get_job_skills_endpoint(offer_id):
+    """
+    Get the skills for a specific job offer.
+    ---
+    tags:
+      - Data Processing
+    summary: Get skills for a specific job offer
+    description: Retrieves the skills information for a specific job offer from the database.
+    parameters:
+      - name: offer_id
+        in: path
+        description: ID of the job offer
+        required: true
+        schema:
+          type: integer
+    responses:
+      200:
+        description: Successfully retrieved job skills.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: success
+                offer_id:
+                  type: integer
+                  example: 1234
+                skills:
+                  type: object
+                  properties:
+                    must:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          skill:
+                            type: string
+                          icon:
+                            type: string
+                          level:
+                            type: integer
+                          desc:
+                            type: string
+                    nice:
+                      type: array
+                      items:
+                        type: object
+                    extra:
+                      type: array
+                      items:
+                        type: object
+      404:
+        description: Job offer not found.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: error
+                message:
+                  type: string
+                  example: Job offer not found
+      500:
+        description: Error retrieving job skills.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: error
+                message:
+                  type: string
+                  example: Failed to retrieve job skills
+    """
+    logger.info(f"Request received to get skills for offer ID {offer_id}")
+    
+    try:
+        # Check if the job offer exists
+        with get_db_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM job_offers WHERE offer_id = ?", (offer_id,))
+            if cursor.fetchone()[0] == 0:
+                return jsonify({
+                    "status": "error",
+                    "message": "Job offer not found"
+                }), 404
+        
+        # Get skills for the job offer
+        skills = get_job_skills(offer_id)
+        
+        return jsonify({
+            "status": "success",
+            "offer_id": offer_id,
+            "skills": skills
+        })
+    except Exception as e:
+        logger.exception(f"Error retrieving skills for offer ID {offer_id}: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to retrieve job skills: {str(e)}"
+        }), 500
 
 @app.route('/send-notifications', methods=['GET'])
 def send_pending_notifications():
@@ -783,7 +1192,7 @@ if __name__ == '__main__':
     logger.info(f"Database Path: {CONFIG['DB_PATH']}")
     logger.info(f"External API Endpoint: {CONFIG['EXTERNAL_ENDPOINT_URL']}")
     logger.info(f"Discord Webhook Configured: {bool(CONFIG['DISCORD_WEBHOOK_URL'])}")
-    logger.info("Endpoints available: /raw-offers, /store-offers, /send-notifications, /health, /api/docs")
+    logger.info("Endpoints available: /raw-offers, /store-offers, /send-notifications, /health, /api/docs, /process-job-details, /job-skills/{offer_id}")
     logger.info("-----------------------------------------")
 
     # Run Flask App
