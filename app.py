@@ -84,9 +84,9 @@ def send_discord_webhook(offer):
         locations = offer.get('locations', [])
         locations_text = f"📍 {', '.join(locations)}" if locations else ""
         
-        # Get offer ID for job link
+        # Get offer ID and slug for job link
         offer_id = offer.get('id')
-        offer_slug = offer.get('slug', 'job')
+        offer_slug = offer.get('slug', f"job-{offer_id}")  # Use the actual slug or fallback
         job_url = f"https://www.getmanfred.com/es/job-offers/{offer_id}/{offer_slug}"
         
         # Get logo URL if available
@@ -211,7 +211,7 @@ def init_db():
             )
             ''')
 
-            # Create table for job offers - including the notification flag
+            # Create table for job offers - including the notification flag and slug
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS job_offers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, -- Using standard auto-increment PK
@@ -223,6 +223,7 @@ def init_db():
                 salary_to INTEGER,
                 locations TEXT,
                 company_logo_dark_url TEXT,           -- New column for dark logo URL
+                slug TEXT,                            -- New column for offer slug
                 timestamp TIMESTAMP NOT NULL,
                 notification_sent BOOLEAN DEFAULT 0    -- Flag for tracking webhook notifications
             )
@@ -234,9 +235,9 @@ def init_db():
             
             # Add notification_sent flag if it's missing
             _add_column_if_not_exists(cursor, 'job_offers', 'notification_sent', 'BOOLEAN DEFAULT 0')
-
-            # Example for future: How to add another column later
-            # _add_column_if_not_exists(cursor, 'job_offers', 'another_new_field', 'INTEGER')
+            
+            # Add slug column if it's missing
+            _add_column_if_not_exists(cursor, 'job_offers', 'slug', 'TEXT')
 
             conn.commit()
             logger.info("Database initialized/verified successfully.")
@@ -365,7 +366,7 @@ def store_offers():
     tags:
       - Data Storage
     summary: Fetch and store job offers in the database
-    description: Fetches job offers from the external API and stores them in the local database, including the company's dark logo URL. Returns a summary of the operation.
+    description: Fetches job offers from the external API and stores them in the local database, including the company's dark logo URL and offer slug. Returns a summary of the operation.
     responses:
       200:
         description: Successfully fetched and stored job offers.
@@ -472,6 +473,7 @@ def store_offers():
                 position = offer.get('position', 'Unknown Position')
                 company_data = offer.get('company', {}) # Default to empty dict if 'company' is missing
                 company_name = company_data.get('name', 'Unknown Company')
+                slug = offer.get('slug', f"job-{offer_id}")  # Get slug or create fallback
 
                 # Extract nested logoDark URL safely
                 logo_dark_data = company_data.get('logoDark', {})
@@ -488,7 +490,7 @@ def store_offers():
                 # Prepare data tuple for insert/update
                 offer_data = (
                     position, company_name, remote_percentage, salary_from,
-                    salary_to, locations_str, company_logo_dark_url, timestamp, offer_id # offer_id at the end for UPDATE WHERE clause
+                    salary_to, locations_str, company_logo_dark_url, slug, timestamp, offer_id # offer_id at the end for UPDATE WHERE clause
                 )
 
                 # Try INSERT first (more common for new offers)
@@ -496,8 +498,8 @@ def store_offers():
                     insert_sql = """
                         INSERT INTO job_offers
                         (offer_id, position, company_name, remote_percentage, salary_from, salary_to,
-                         locations, company_logo_dark_url, timestamp, notification_sent)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                         locations, company_logo_dark_url, slug, timestamp, notification_sent)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                     """
                     # Note: For INSERT, offer_id is first in the VALUES list
                     cursor.execute(insert_sql, (offer_id,) + offer_data[:-1]) # Reorder tuple for INSERT
@@ -512,7 +514,7 @@ def store_offers():
                             UPDATE job_offers
                             SET position = ?, company_name = ?, remote_percentage = ?,
                                 salary_from = ?, salary_to = ?, locations = ?,
-                                company_logo_dark_url = ?, timestamp = ?
+                                company_logo_dark_url = ?, slug = ?, timestamp = ?
                             WHERE offer_id = ?
                         """
                         cursor.execute(update_sql, offer_data) # Use original tuple order for UPDATE
@@ -621,7 +623,7 @@ def send_pending_notifications():
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT offer_id, position, company_name, remote_percentage, 
-                       salary_from, salary_to, locations, company_logo_dark_url 
+                       salary_from, salary_to, locations, company_logo_dark_url, slug
                 FROM job_offers
                 WHERE notification_sent = 0
                 ORDER BY timestamp DESC
@@ -645,7 +647,7 @@ def send_pending_notifications():
                     'salaryFrom': offer_row[4],
                     'salaryTo': offer_row[5],
                     'locations': offer_row[6].split(', ') if offer_row[6] else [],
-                    'slug': f"job-{offer_row[0]}"  # Generate a simple slug
+                    'slug': offer_row[8] if offer_row[8] else f"job-{offer_row[0]}"  # Use stored slug or generate fallback
                 }
                 pending_offers.append(offer_dict)
         
