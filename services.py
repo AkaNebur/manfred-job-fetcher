@@ -113,22 +113,45 @@ def process_pending_details_service(limit=10):
             # 3. Fetch details from API
             job_details = manfred_api.fetch_job_details_data(offer_id, slug)
 
-            # 4. Extract and Store Skills
-            skills_data = None
+            # 4. Extract and Store Skills and Languages
             if job_details and isinstance(job_details, dict):
-                # Navigate the structure to find skills
-                skills_data = job_details.get('skillsSectionData', {}).get('skills') if isinstance(job_details.get('skillsSectionData'), dict) else None
-
-            if skills_data:
-                 # Attempt to store skills in DB
-                if database.store_job_skills(offer_id, skills_data):
-                    logger.info(f"Service: Successfully processed and stored skills for offer ID {offer_id}.")
-                    processed_count += 1
+                # Navigate the structure to find skills section data
+                skills_section = job_details.get('skillsSectionData', {}) if isinstance(job_details.get('skillsSectionData'), dict) else {}
+                
+                # Get skills data
+                skills_data = skills_section.get('skills')
+                
+                # Get language requirements
+                languages_data = skills_section.get('minLanguages')
+                
+                skills_stored = False
+                languages_stored = False
+                
+                # Process skills if available
+                if skills_data:
+                    skills_stored = database.store_job_skills(offer_id, skills_data)
+                    if not skills_stored:
+                        logger.warning(f"Service: Failed to store skills for offer ID {offer_id} after fetching details.")
                 else:
-                    # store_job_skills logs the error internally
-                    logger.warning(f"Service: Failed to store skills for offer ID {offer_id} after fetching details.")
-                    # Decide whether to mark as retrieved anyway to prevent retries?
-                    # Current logic in store_job_skills handles marking retrieved even on failure/no skills.
+                    # No skills data but mark as retrieved
+                    skills_stored = database.store_job_skills(offer_id, None)
+                
+                # Process languages if available
+                if languages_data:
+                    languages_stored = database.store_job_languages(offer_id, languages_data)
+                    if not languages_stored:
+                        logger.warning(f"Service: Failed to store languages for offer ID {offer_id} after fetching details.")
+                
+                # Mark as processed if either skills or languages were stored or if skills section exists but is empty
+                if skills_stored or languages_stored or skills_section:
+                    logger.info(f"Service: Successfully processed data for offer ID {offer_id}.")
+                    processed_count += 1
+                    # store_job_skills already marks as retrieved, even when skills are missing
+                else:
+                    # Both skills and languages processing failed, but job_details was fetched
+                    logger.warning(f"Service: Fetched details for offer ID {offer_id}, but failed to process skills and languages.")
+                    # Mark as retrieved to avoid retrying indefinitely
+                    database.store_job_skills(offer_id, None) # Pass None to mark as retrieved
             elif job_details is not None:
                  # Details fetched, but skills section missing/empty or structure unexpected
                  logger.warning(f"Service: Fetched details for offer ID {offer_id}, but skills data was missing or in unexpected format. Marking as retrieved.")
@@ -139,7 +162,7 @@ def process_pending_details_service(limit=10):
                  logger.warning(f"Service: Failed to fetch job details for offer ID {offer_id}. It will be retried later.")
                  # Do not increment processed_count, do not mark as retrieved
 
-        logger.info(f"Service: Finished processing pending details. Successfully processed skills for {processed_count}/{len(pending_offers)} offers.")
+        logger.info(f"Service: Finished processing pending details. Successfully processed data for {processed_count}/{len(pending_offers)} offers.")
         return processed_count
 
     except Exception as e:
@@ -210,17 +233,27 @@ def send_pending_notifications_service(limit=5):
 
 
 def get_job_skills_service(offer_id):
-    """Service layer function to retrieve skills for a specific job offer."""
-    logger.info(f"Service: Retrieving skills for offer ID {offer_id}.")
+    """Service layer function to retrieve skills and languages for a specific job offer."""
+    logger.info(f"Service: Retrieving skills and languages for offer ID {offer_id}.")
     # Check if offer exists first
     offer_exists = database.get_offer_by_id(offer_id)
     if not offer_exists:
         logger.warning(f"Service: Offer ID {offer_id} not found in database.")
         return None # Indicate not found
 
+    # Get skills data
     skills = database.get_job_skills_from_db(offer_id)
-    # The DB function handles logging if retrieval fails, returns empty dict
-    return skills
+    
+    # Get languages data
+    languages = database.get_job_languages_from_db(offer_id)
+    
+    # Return combined result
+    result = {
+        'skills': skills,
+        'languages': languages
+    }
+    
+    return result
 
 def get_health_status_service():
     """Service layer function to check system health."""

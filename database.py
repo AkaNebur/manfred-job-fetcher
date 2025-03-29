@@ -122,9 +122,22 @@ def init_db():
                 FOREIGN KEY (offer_id) REFERENCES job_offers(offer_id) ON DELETE CASCADE,
                 UNIQUE(offer_id, category, skill_name)
             )''')
+            
+            # New Job Languages Table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS job_languages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                offer_id INTEGER NOT NULL,
+                language_name TEXT NOT NULL,
+                language_level TEXT NOT NULL,
+                FOREIGN KEY (offer_id) REFERENCES job_offers(offer_id) ON DELETE CASCADE,
+                UNIQUE(offer_id, language_name)
+            )''')
+            
             # Index for faster lookups
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_offers_offer_id ON job_offers(offer_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_skills_offer_id ON job_skills(offer_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_languages_offer_id ON job_languages(offer_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_offers_notification_sent ON job_offers(notification_sent)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_offers_skills_retrieved ON job_offers(skills_retrieved)")
 
@@ -158,7 +171,13 @@ def store_job_skills(offer_id, skills_data):
     """Stores the skills information for a job offer in the database."""
     if not skills_data:
         logger.warning(f"No skills data provided for offer ID {offer_id}")
-        return False
+        # Mark as retrieved even if no skills data
+        try:
+            _db_execute("UPDATE job_offers SET skills_retrieved = 1 WHERE offer_id = ?", (offer_id,), commit=True)
+            return True # Indicate processing happened, even if no skills inserted
+        except Exception as e:
+            logger.error(f"Error marking offer {offer_id} as skills_retrieved: {e}")
+            return False
 
     skills_to_insert = []
     for category in ['must', 'nice', 'extra']:
@@ -201,6 +220,42 @@ def store_job_skills(offer_id, skills_data):
         logger.error(f"Error storing skills for offer ID {offer_id}: {e}", exc_info=True)
         return False
 
+def store_job_languages(offer_id, languages_data):
+    """Stores the language requirements for a job offer in the database."""
+    if not languages_data:
+        logger.warning(f"No language data provided for offer ID {offer_id}")
+        return False
+
+    languages_to_insert = []
+    for language in languages_data:
+        languages_to_insert.append((
+            offer_id,
+            language.get('name', ''),
+            language.get('level', '')
+        ))
+
+    if not languages_to_insert:
+        logger.info(f"No valid languages found in data for offer ID {offer_id}")
+        return True  # Return success since we did process the data
+
+    try:
+        with get_db_conn() as conn:
+            cursor = conn.cursor()
+            # Clear existing languages first
+            cursor.execute("DELETE FROM job_languages WHERE offer_id = ?", (offer_id,))
+            # Insert new languages
+            cursor.executemany(
+                """INSERT OR IGNORE INTO job_languages (offer_id, language_name, language_level)
+                   VALUES (?, ?, ?)""",
+                languages_to_insert
+            )
+            conn.commit()
+            logger.info(f"Successfully stored/updated {len(languages_to_insert)} languages for offer ID {offer_id}")
+            return True
+    except Exception as e:
+        logger.error(f"Error storing languages for offer ID {offer_id}: {e}", exc_info=True)
+        return False
+
 def get_job_skills_from_db(offer_id):
     """Retrieves the skills for a specific job offer from the database."""
     result = {'must': [], 'nice': [], 'extra': []}
@@ -235,6 +290,30 @@ def get_job_skills_from_db(offer_id):
     except Exception as e:
         logger.error(f"Failed to retrieve skills for offer ID {offer_id} from DB, returning empty. Error: {e}", exc_info=True)
         return result # Return default empty structure on error
+
+def get_job_languages_from_db(offer_id):
+    """Retrieves the language requirements for a specific job offer from the database."""
+    result = []
+    try:
+        rows = _db_execute(
+            """SELECT language_name, language_level
+               FROM job_languages WHERE offer_id = ? ORDER BY language_name""",
+            (offer_id,),
+            fetch_all=True
+        )
+        if not rows:
+            logger.debug(f"No language requirements found in DB for offer ID {offer_id}")
+            return result
+
+        for row in rows:
+            result.append({
+                'name': row['language_name'],
+                'level': row['language_level']
+            })
+        return result
+    except Exception as e:
+        logger.error(f"Failed to retrieve languages for offer ID {offer_id} from DB, returning empty. Error: {e}", exc_info=True)
+        return result
 
 def get_pending_skill_offers(limit=10):
     """Retrieves job offers that need skills details fetched."""

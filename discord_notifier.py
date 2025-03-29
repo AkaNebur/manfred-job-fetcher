@@ -4,7 +4,7 @@ from datetime import datetime
 import time
 
 from config import CONFIG
-from database import get_job_skills_from_db
+from database import get_job_skills_from_db, get_job_languages_from_db
 from manfred_api import http_session
 
 logger = logging.getLogger(__name__)
@@ -20,6 +20,23 @@ def _format_skills_for_field(skill_list):
     # Keep truncation slightly lower than 1024 to account for potential title additions within the field
     # Discord field value limit is 1024 characters
     return formatted_value[:1020] + "..." if len(formatted_value) > 1020 else (formatted_value if formatted_value else None)
+
+def _format_language_for_field(language_list):
+    """Formats a list of language dictionaries into a string for an embed field."""
+    if not language_list:
+        return None
+        
+    lines = []
+    for language in language_list:
+        name = language.get('name', 'N/A')
+        level = language.get('level', 'N/A')
+        # Format level more user-friendly
+        level_display = level.capitalize() if level else 'N/A'
+        lines.append(f"• {name}: {level_display}")
+    
+    formatted_value = "\n".join(lines)
+    # Discord field value limit is 1024 characters
+    return formatted_value[:1020] + "..." if len(formatted_value) > 1020 else formatted_value
 
 def _build_discord_embed(offer_dict):
     """Builds the Discord embed message for a job offer dictionary with stacked sections."""
@@ -52,10 +69,15 @@ def _build_discord_embed(offer_dict):
     # Ensure locations is a list before joining
     locations_text = f"{', '.join(locations)}" if locations and isinstance(locations, list) else None
 
+    # Get skills data
     skills_data = get_job_skills_from_db(offer_id)
     must_skills_text = _format_skills_for_field(skills_data.get('must', []))
     nice_skills_text = _format_skills_for_field(skills_data.get('nice', []))
     extra_skills_text = _format_skills_for_field(skills_data.get('extra', []))
+    
+    # Get language requirements
+    languages_data = get_job_languages_from_db(offer_id)
+    languages_text = _format_language_for_field(languages_data)
 
     # --- Build Fields (No Columns/Inline) ---
     fields = []
@@ -74,6 +96,14 @@ def _build_discord_embed(offer_dict):
             "name": "-----",
             "value": "\n".join(info_lines),
             "inline": False # Explicitly false, or omit entirely for default non-inline
+        })
+        
+    # --- Language Requirements Field ---
+    if languages_text:
+        fields.append({
+            "name": "🌐 Language Requirements",
+            "value": languages_text,
+            "inline": False
         })
 
     # --- Skills Fields ---
@@ -107,11 +137,6 @@ def _build_discord_embed(offer_dict):
     }
     if logo_url:
         embed["thumbnail"] = {"url": logo_url}
-
-    # Limit total embed length (sum of title, desc, footer, author, fields) to 6000 chars
-    # Limit field name to 256 chars, field value to 1024 chars
-    # Limit number of fields to 25
-    # Truncate description if needed (though it's empty here)
 
     return embed
 

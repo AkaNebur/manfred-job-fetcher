@@ -189,12 +189,12 @@ def process_job_details_route():
 @api_bp.route('/job-skills/<int:offer_id>', methods=['GET'])
 def get_job_skills_route(offer_id):
     """
-    Gets the stored skills for a specific job offer.
+    Gets the stored skills and language requirements for a specific job offer.
     ---
     tags:
       - Data Retrieval
-    summary: Get skills for a specific job offer
-    description: Retrieves the stored skills information (must, nice, extra categories) for a given job offer ID from the application's database.
+    summary: Get skills and language requirements for a specific job offer
+    description: Retrieves the stored skills information (must, nice, extra categories) and language requirements for a given job offer ID from the application's database.
     parameters:
       - name: offer_id
         in: path
@@ -205,7 +205,7 @@ def get_job_skills_route(offer_id):
           example: 12345
     responses:
       200:
-        description: "Successfully retrieved job skills."
+        description: "Successfully retrieved job skills and languages."
         content:
           application/json:
             schema:
@@ -226,6 +226,10 @@ def get_job_skills_route(offer_id):
                     extra:
                       type: array
                       items: { $ref: '#/definitions/SkillDetail' }
+                languages:
+                  type: array
+                  description: "Array of language requirements."
+                  items: { $ref: '#/definitions/LanguageDetail' }
       404:
         description: "Job offer with the specified ID was not found in the database."
         content:
@@ -249,19 +253,28 @@ def get_job_skills_route(offer_id):
         type: object
         properties:
           skill: { type: string, example: "Python" }
-          icon: { type: string, nullable: true, example: "python-icon.png" }
+          icon: { type: string, nullable: true, example: "python-icon.svg" }
           level: { type: integer, nullable: true, example: 4 }
           desc: { type: string, nullable: true, example: "Experience with Django/Flask" }
-
+      LanguageDetail:
+        type: object
+        properties:
+          name: { type: string, example: "Inglés" }
+          level: { type: string, example: "intermediate" }
     """
     logger.info(f"Route: GET /job-skills/{offer_id}")
     try:
-        skills_data = services.get_job_skills_service(offer_id)
-        if skills_data is None:
+        result = services.get_job_skills_service(offer_id)
+        if result is None:
             return jsonify({"status": "error", "message": "Job offer not found"}), 404
         else:
-            # Service returns the skills dict directly (or empty dict if skills retrieval failed but offer exists)
-            return jsonify({"status": "success", "offer_id": offer_id, "skills": skills_data}), 200
+            # The service now returns both skills and languages
+            return jsonify({
+                "status": "success", 
+                "offer_id": offer_id, 
+                "skills": result['skills'],
+                "languages": result['languages']
+            }), 200
     except Exception as e:
         logger.exception(f"Route: Unexpected error in /job-skills/{offer_id}")
         return jsonify({"status": "error", "message": "An internal server error occurred"}), 500
