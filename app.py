@@ -2,110 +2,127 @@
 import os
 import logging
 import sys
-from flask import Flask
+from typing import Callable
+
+import uvicorn
+from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 # Import configurations and initializers
-from config import CONFIG # Base configuration
-from database import init_db, check_db_connection, Session # Updated import for SQLAlchemy
-from swagger import setup_swagger # Swagger setup
-from routes import api_bp # Import the Blueprint with API routes
-from scheduler import initialize_scheduler # Import scheduler initializer
+from config import CONFIG
+from database import init_db, check_db_connection, Session
+from routes import router
+# Delay scheduler import to avoid circular imports
 
 # --- Logging Setup ---
-# Configure logging early
 log_level_str = os.getenv('LOG_LEVEL', 'INFO').upper()
 log_level = getattr(logging, log_level_str, logging.INFO)
 
 logging.basicConfig(
     level=log_level,
     format='%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s',
-    stream=sys.stdout # Log to stdout, suitable for containers
+    stream=sys.stdout
 )
-# Optionally reduce log level for noisy libraries
+# Reduce verbosity of certain loggers
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
-logging.getLogger("werkzeug").setLevel(logging.WARNING) # Less verbose server logs
-logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING) # Reduce SQLAlchemy logging
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
-logger = logging.getLogger(__name__) # Logger for this module
+logger = logging.getLogger(__name__)
 
-def create_app():
-    """Creates and configures the Flask application."""
-    app = Flask(__name__)
-
-    # Load Flask specific configurations if any (can be from CONFIG or os.getenv)
-    app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'a-default-secret-key-for-dev') # Example Flask config
-    # app.config['DEBUG'] = CONFIG.get('FLASK_DEBUG', False) # If debug needed
-
-    logger.info("Flask app created. Initializing components...")
-
-    # Initialize Database
+# Setup FastAPI lifespan for startup/shutdown events
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup operations
+    logger.info("Starting application with FastAPI")
+    
+    # Initialize database - don't exit on failure, let app start in degraded mode
     try:
         init_db()
-        # Perform a quick connection check after init
         db_ok, db_msg = check_db_connection()
         if not db_ok:
             logger.error(f"Initial database connection check failed: {db_msg}")
-            # Depending on requirements, might exit or continue with degraded functionality
         else:
             logger.info("Database initialization and connection check successful.")
     except Exception as e:
         logger.critical(f"CRITICAL: Failed to initialize database: {e}", exc_info=True)
-        # Exit if DB initialization fails, as the app likely can't function
-        sys.exit("Database initialization failed. Exiting.")
-
-    # Register Blueprints (API routes)
-    app.register_blueprint(api_bp, url_prefix='/') # Register API routes at root '/'
-    logger.info("API routes registered.")
-
-    # Setup Swagger Documentation
+        # Don't exit, let app start in degraded mode
+        # sys.exit("Database initialization failed. Exiting.")
+    
+    # Initialize scheduler (adapted for FastAPI)
     try:
-        setup_swagger(app)
-        logger.info("Swagger UI setup complete. Available at /api/docs")
-    except Exception as e:
-        logger.error(f"Failed to setup Swagger: {e}", exc_info=True)
-        # Continue running even if Swagger fails
-        
-    # Initialize the scheduler
-    try:
-        initialize_scheduler(app)
+        # Import scheduler at the top level to avoid circular imports
+        from scheduler import initialize_scheduler as init_sched
+        scheduler = init_sched(app)
         logger.info("Scheduler initialized. Automatic fetch will run every hour.")
     except Exception as e:
         logger.error(f"Failed to initialize scheduler: {e}", exc_info=True)
-        # Continue running even if scheduler initialization fails
+    
+    yield  # This is where FastAPI serves the application
+    
+    # Shutdown operations
+    logger.info("Shutting down application")
+    
+    # Shutdown scheduler if running - handle possible import error
+    try:
+        from scheduler import scheduler as sched
+        if sched and getattr(sched, 'running', False):
+            logger.info("Shutting down scheduler")
+            sched.shutdown()
+    except (ImportError, AttributeError) as e:
+        logger.warning(f"Could not properly shut down scheduler: {e}")
 
-    # Add SQLAlchemy session cleanup on request end
-    @app.teardown_appcontext
-    def shutdown_session(exception=None):
+# Create FastAPI application
+app = FastAPI(
+    title="Manfred Job Fetcher API",
+    description="API for fetching, storing, and processing job offers from GetManfred, with Discord notifications.",
+    version="2.0.0",
+    lifespan=lifespan
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins in development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# SQLAlchemy session management middleware
+@app.middleware("http")
+async def db_session_middleware(request: Request, call_next: Callable):
+    try:
+        response = await call_next(request)
+    finally:
         Session.remove()
+    return response
 
-    logger.info("Application components initialized.")
-    return app
+# Include routes
+app.include_router(router)
 
-# --- Application Entry Point ---
-if __name__ == '__main__':
-    app = create_app()
-
+# Display logging info at startup when run directly
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    
     # Log key configuration details on startup
     logger.info("-----------------------------------------")
-    logger.info("Manfred Job Fetcher Starting Up (SQLAlchemy Version)")
+    logger.info("Manfred Job Fetcher Starting Up (FastAPI Version)")
     logger.info(f"Log Level: {log_level_str}")
     logger.info(f"DB Path: {CONFIG['DB_PATH']}")
     logger.info(f"External API: {CONFIG['EXTERNAL_ENDPOINT_URL']}")
     logger.info(f"Webhook Configured: {bool(CONFIG['DISCORD_WEBHOOK_URL'])}")
     logger.info(f"Detail Build Hash: {CONFIG['BUILD_ID_HASH']}")
     logger.info(f"Fetch Interval: {CONFIG['FETCH_INTERVAL']} seconds ({CONFIG['FETCH_INTERVAL']/60:.1f} minutes)")
-    logger.info("Registered Routes:")
-    for rule in app.url_map.iter_rules():
-        if rule.endpoint != 'static': # Exclude static rule
-            logger.info(f"  - {rule.methods} {rule.rule} -> {rule.endpoint}")
     logger.info("-----------------------------------------")
-
-    # Use Waitress or Gunicorn in production instead of app.run()
-    # For development:
-    port = int(os.getenv('PORT', 5000))
-    debug_mode = os.getenv('FLASK_DEBUG', '0') == '1' # Enable Flask debug mode if FLASK_DEBUG=1
-    logger.info(f"Running Flask development server on port {port} (Debug Mode: {debug_mode})")
-    app.run(host='0.0.0.0', port=port, debug=debug_mode)
+    
+    # Run with uvicorn
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=port,
+        reload=os.getenv('FLASK_DEBUG', '0') == '1'
+    )
 
 # --- END OF FILE app.py ---

@@ -139,9 +139,10 @@ def init_db():
 def check_db_connection():
     """Checks if a connection to the database can be established."""
     try:
-        # Try a simple query with SQLAlchemy
+        # Use SQLAlchemy text() function for raw SQL expressions
+        from sqlalchemy import text
         session = Session()
-        session.execute("SELECT 1").scalar()
+        session.execute(text("SELECT 1")).scalar()
         session.close()
         return True, "connected"
     except Exception as e:

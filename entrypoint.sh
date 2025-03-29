@@ -27,6 +27,6 @@ else
     echo "Database reset not requested (RESET_DB=false)"
 fi
 
-# Start the application
-echo "Starting application..."
-exec python app.py
+# Start the application with Uvicorn
+echo "Starting application with Uvicorn..."
+exec uvicorn app:app --host 0.0.0.0 --port 5000

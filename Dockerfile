@@ -13,13 +13,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Create data directory for SQLite database
 RUN mkdir -p /app/data
 
-# Copy application code - updated to include all Python modules
+# Copy application code
 COPY app.py .
-COPY swagger.py .
+COPY models.py .
+COPY routes.py .
 COPY config.py .
 COPY scheduler.py .
 COPY database.py .
-COPY routes.py .
 COPY services.py .
 COPY manfred_api.py .
 COPY discord_notifier.py .
@@ -28,7 +28,7 @@ COPY discord_notifier.py .
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
-# Expose the port Flask will run on
+# Expose the port FastAPI will run on
 EXPOSE 5000
 
 # Add Docker healthcheck

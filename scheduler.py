@@ -3,18 +3,23 @@ import logging
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from flask import Flask
+from fastapi import FastAPI
 
+# Import CONFIG at module level
 from config import CONFIG
-import services
 
 logger = logging.getLogger(__name__)
 
 # Global scheduler instance
 scheduler = None
 
-def initialize_scheduler(app: Flask):
-    """Initialize and start the job scheduler."""
+# Lazy import services to avoid circular imports
+def get_services():
+    import services
+    return services
+
+def initialize_scheduler(app: FastAPI):
+    """Initialize and start the job scheduler for FastAPI."""
     global scheduler
     
     if scheduler:
@@ -42,19 +47,9 @@ def initialize_scheduler(app: Flask):
     # Start the scheduler
     scheduler.start()
     
-    # Register a shutdown function with Flask
-    @app.before_first_request
-    def initialize_job():
-        # Run the job once at startup to avoid waiting for first interval
-        logger.info("Running initial job fetch on startup")
-        scheduled_fetch_job()
-    
-    # Register scheduler shutdown on app teardown
-    @app.teardown_appcontext
-    def shutdown_scheduler(exception=None):
-        if scheduler and scheduler.running:
-            logger.info("Shutting down scheduler")
-            scheduler.shutdown()
+    # Run the job immediately at startup
+    logger.info("Running initial job fetch on startup")
+    scheduled_fetch_job()
     
     logger.info("Scheduler successfully initialized and started")
     return scheduler
@@ -65,6 +60,9 @@ def scheduled_fetch_job():
     logger.info(f"Scheduler: Starting scheduled job fetch at {start_time.isoformat()}")
     
     try:
+        # Lazy import services
+        services = get_services()
+        
         # Call the service function to fetch and process offers
         result = services.fetch_and_store_offers_service()
         
