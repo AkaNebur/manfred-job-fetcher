@@ -1,32 +1,35 @@
-# Entornos virtuales de Python
+# Python virtual environments
 venv/
 .venv/
 env/
 *.env
 
-# Archivos de base de datos SQLite en el directorio data
+# SQLite database files in the data directory
 data/*.db
-data/*.db-journal # Archivos temporales de SQLite
+data/*.db-journal # Temporary SQLite files
 
-# Archivos compilados y caché de Python
+# Python compiled files and cache
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# Archivos específicos de IDE/Editor
+# IDE/Editor specific files
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# Archivos del sistema operativo
+# Operating system files
 .DS_Store
 Thumbs.db
 
-# Archivos de configuración local con secretos (si usas python-dotenv)
+# Local configuration files with secrets (if using python-dotenv)
 .env
 
-# Cualquier otro archivo sensible o generado automáticamente
+# Other sensitive or automatically generated files
 secrets.txt
 config.local.yaml
+
+# Docker
+docker-compose.override.yml
