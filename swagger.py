@@ -26,7 +26,7 @@ def setup_swagger(app):
             "description": "API for fetching raw data from GetManfred and checking system health.",
             "version": "1.0.0",
             "contact": {
-                "email": "your.email@example.com" # Replace if needed
+                "email": "rubengalandiaz@gmail.com" # Replace if needed
             },
         },
         "schemes": [
@@ -34,26 +34,7 @@ def setup_swagger(app):
             "https"
         ],
         "tags": [
-             {
-                "name": "Raw Data",
-                "description": "Direct fetching from external source"
-            },
-            {
-                "name": "Data Storage",
-                "description": "Operations for persisting job offers data"
-            },
-            {
-                "name": "Data Processing",
-                "description": "Operations for processing job offers data"
-            },
-            {
-                "name": "Notifications",
-                "description": "Operations for sending notifications"
-            },
-            {
-                "name": "System",
-                "description": "System health check"
-            }
+             # ... tags ...
         ],
         "definitions": {
              # No complex definitions needed for the remaining endpoints
