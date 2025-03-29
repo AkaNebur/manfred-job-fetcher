@@ -17,6 +17,10 @@ RUN mkdir -p /app/data
 COPY app.py .
 COPY swagger.py .
 
+# Create startup script to reset DB
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
 # Expose the port Flask will run on
 EXPOSE 5000
 
@@ -24,5 +28,5 @@ EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:5000/health || exit 1
 
-# Run the application
-CMD ["python", "app.py"]
+# Run the entrypoint script instead of directly running the app
+CMD ["./entrypoint.sh"]

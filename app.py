@@ -62,8 +62,8 @@ def get_db_conn():
     try:
         # Use a timeout for connection attempts
         conn = sqlite3.connect(db_path, timeout=10)
-        # No need for row_factory if just checking connection or simple logging
-        # conn.row_factory = sqlite3.Row
+        # Enable foreign key constraints if needed (not currently used)
+        # conn.execute("PRAGMA foreign_keys = ON")
         yield conn
     except Exception as e:
         logger.error(f"Database connection error to {db_path}: {e}")
@@ -72,13 +72,25 @@ def get_db_conn():
         if conn:
             conn.close()
 
+def _add_column_if_not_exists(cursor, table_name, column_name, column_type):
+    """Helper function to add a column if it doesn't exist."""
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    columns = [info[1] for info in cursor.fetchall()]
+    if column_name not in columns:
+        logger.info(f"Adding column '{column_name}' to table '{table_name}'...")
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+        logger.info(f"Column '{column_name}' added successfully.")
+    else:
+        logger.debug(f"Column '{column_name}' already exists in table '{table_name}'.")
+
+
 def init_db():
-    """Initialize the SQLite database with tables."""
+    """Initialize the SQLite database with tables and ensures necessary columns exist."""
     logger.info(f"Initializing database at {CONFIG['DB_PATH']}...")
     try:
         with get_db_conn() as conn:
             cursor = conn.cursor()
-            # Create table for fetch history
+            # Create table for fetch history (no changes needed here)
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS fetch_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,36 +101,34 @@ def init_db():
                 error TEXT
             )
             ''')
-            
-            # Drop job_offers table if it exists but has wrong schema
-            try:
-                # Try to query the table to check its structure
-                cursor.execute("SELECT offer_id, position, company_name FROM job_offers LIMIT 1")
-            except sqlite3.OperationalError:
-                # Table doesn't exist or has wrong schema, drop it if it exists
-                logger.info("Job offers table has wrong schema or doesn't exist - recreating it")
-                cursor.execute("DROP TABLE IF EXISTS job_offers")
-            
-            # Create table for job offers
+
+            # Create table for job offers - including the new column
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS job_offers (
-                id INTEGER PRIMARY KEY,
-                offer_id INTEGER NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT, -- Using standard auto-increment PK
+                offer_id INTEGER NOT NULL UNIQUE,     -- The actual ID from the API, must be unique
                 position TEXT NOT NULL,
                 company_name TEXT NOT NULL,
                 remote_percentage INTEGER,
                 salary_from INTEGER,
                 salary_to INTEGER,
                 locations TEXT,
-                timestamp TIMESTAMP NOT NULL,
-                UNIQUE(offer_id)
+                company_logo_dark_url TEXT,           -- New column for dark logo URL
+                timestamp TIMESTAMP NOT NULL
             )
             ''')
-            
+
+            # --- Schema Migration: Ensure new columns exist ---
+            # Add company_logo_dark_url if it's missing from an existing table
+            _add_column_if_not_exists(cursor, 'job_offers', 'company_logo_dark_url', 'TEXT')
+
+            # Example for future: How to add another column later
+            # _add_column_if_not_exists(cursor, 'job_offers', 'another_new_field', 'INTEGER')
+
             conn.commit()
-            logger.info("Database initialized successfully.")
+            logger.info("Database initialized/verified successfully.")
     except Exception as e:
-        logger.error(f"Failed to initialize database: {e}", exc_info=True)
+        logger.error(f"Failed to initialize or migrate database: {e}", exc_info=True)
         # Depending on severity, you might want to exit the application here
         # raise SystemExit(f"Could not initialize database: {e}")
 
@@ -242,7 +252,7 @@ def store_offers():
     tags:
       - Data Storage
     summary: Fetch and store job offers in the database
-    description: Fetches job offers from the external API and stores them in the local database. Returns a summary of the operation.
+    description: Fetches job offers from the external API and stores them in the local database, including the company's dark logo URL. Returns a summary of the operation.
     responses:
       200:
         description: Successfully fetched and stored job offers.
@@ -254,15 +264,15 @@ def store_offers():
                 status:
                   type: string
                   example: success
-                stored_count:
+                total_fetched:
                   type: integer
-                  example: 25
+                  example: 50
                 new_offers:
                   type: integer
                   example: 10
                 updated_offers:
                   type: integer
-                  example: 15
+                  example: 40
                 timestamp:
                   type: string
                   format: date-time
@@ -279,104 +289,145 @@ def store_offers():
                 message:
                   type: string
                   example: Failed to fetch or store job offers
+      502:
+        description: Bad Gateway or invalid response format from external API.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: error
+                message:
+                  type: string
+                  example: Received non-JSON or invalid list response from external API
     """
     external_url = CONFIG['EXTERNAL_ENDPOINT_URL']
     logger.info(f"Request received to fetch and store offers from {external_url}")
-    
-    # Fetch data from external API
+
+    # 1. Fetch data from external API
     response = _make_api_request(external_url)
-    
+
     if not response:
         return jsonify({
-            "status": "error", 
+            "status": "error",
             "message": "Failed to fetch data from external API"
         }), 500
-    
+
+    # 2. Parse and Validate Response
     try:
-        # Parse the JSON response
         offers = response.json()
-        
-        # Check if we have a valid list of offers
         if not isinstance(offers, list):
+            logger.error(f"Store offers endpoint: Invalid response format from {external_url}. Expected a list, got {type(offers)}")
             return jsonify({
-                "status": "error", 
+                "status": "error",
                 "message": "Invalid response format from external API - expected a list of offers"
-            }), 500
-        
-        # Store the offers in the database
-        new_count = 0
-        updated_count = 0
-        timestamp = datetime.now()
-        
-        with get_db_conn() as conn:
-            cursor = conn.cursor()
-            
-            for offer in offers:
-                # Extract key fields from offer
-                offer_id = offer.get('id')
-                position = offer.get('position', 'Unknown')
-                company_name = offer.get('company', {}).get('name', 'Unknown')
-                remote_percentage = offer.get('remotePercentage', 0)
-                salary_from = offer.get('salaryFrom', 0)
-                salary_to = offer.get('salaryTo', 0)
-                
-                # Handle locations (convert list to comma-separated string)
-                locations = offer.get('locations', [])
-                locations_str = ', '.join(locations) if locations else ''
-                
-                try:
-                    # Try to insert the offer (will fail if offer_id already exists)
-                    cursor.execute(
-                        """
-                        INSERT INTO job_offers 
-                        (offer_id, position, company_name, remote_percentage, salary_from, salary_to, 
-                         locations, timestamp) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (offer_id, position, company_name, remote_percentage, salary_from, 
-                         salary_to, locations_str, timestamp)
-                    )
-                    new_count += 1
-                except sqlite3.IntegrityError:
-                    # Offer already exists, update it
-                    cursor.execute(
-                        """
-                        UPDATE job_offers 
-                        SET position = ?, company_name = ?, remote_percentage = ?, 
-                            salary_from = ?, salary_to = ?, locations = ?, 
-                            timestamp = ?
-                        WHERE offer_id = ?
-                        """,
-                        (position, company_name, remote_percentage, salary_from, 
-                         salary_to, locations_str, timestamp, offer_id)
-                    )
-                    updated_count += 1
-            
-            # Commit all changes
-            conn.commit()
-        
-        # Return a summary of the operation
-        return jsonify({
-            "status": "success",
-            "stored_count": len(offers),
-            "new_offers": new_count,
-            "updated_offers": updated_count,
-            "timestamp": timestamp.isoformat()
-        })
-    
+            }), 502 # Use 502 as it's a problem with the upstream response
     except json.JSONDecodeError as e:
         logger.error(f"Store offers endpoint: Content from {external_url} is not valid JSON: {e}")
         return jsonify({
-            "status": "error", 
+            "status": "error",
             "message": "Received non-JSON response from external API"
         }), 502
-        
-    except Exception as e:
-        logger.exception(f"Error storing offers: {e}")
+    except Exception as e: # Catch other potential errors during parsing
+        logger.exception(f"Unexpected error parsing response from {external_url}")
+        return jsonify({"status": "error", "message": "Failed to parse response from external API"}), 500
+
+
+    # 3. Store Offers in Database
+    new_count = 0
+    updated_count = 0
+    timestamp = datetime.now()
+    total_fetched = len(offers)
+
+    try:
+        with get_db_conn() as conn:
+            cursor = conn.cursor()
+
+            for offer in offers:
+                # Extract key fields, using .get() for safety
+                offer_id = offer.get('id')
+                if offer_id is None:
+                    logger.warning(f"Skipping offer due to missing 'id': {offer.get('position', 'N/A')}")
+                    continue # Skip offers without an ID
+
+                position = offer.get('position', 'Unknown Position')
+                company_data = offer.get('company', {}) # Default to empty dict if 'company' is missing
+                company_name = company_data.get('name', 'Unknown Company')
+
+                # Extract nested logoDark URL safely
+                logo_dark_data = company_data.get('logoDark', {})
+                company_logo_dark_url = logo_dark_data.get('url', None) # Use None if url is missing
+
+                remote_percentage = offer.get('remotePercentage') # Allow None if not present
+                salary_from = offer.get('salaryFrom')
+                salary_to = offer.get('salaryTo')
+
+                # Handle locations (convert list to comma-separated string)
+                locations = offer.get('locations', [])
+                locations_str = ', '.join(loc for loc in locations if isinstance(loc, str)) if locations else None
+
+                # Prepare data tuple for insert/update
+                offer_data = (
+                    position, company_name, remote_percentage, salary_from,
+                    salary_to, locations_str, company_logo_dark_url, timestamp, offer_id # offer_id at the end for UPDATE WHERE clause
+                )
+
+                # Try INSERT first (more common for new offers)
+                try:
+                    insert_sql = """
+                        INSERT INTO job_offers
+                        (offer_id, position, company_name, remote_percentage, salary_from, salary_to,
+                         locations, company_logo_dark_url, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                    # Note: For INSERT, offer_id is first in the VALUES list
+                    cursor.execute(insert_sql, (offer_id,) + offer_data[:-1]) # Reorder tuple for INSERT
+                    new_count += 1
+                except sqlite3.IntegrityError:
+                    # offer_id already exists, so UPDATE instead
+                    try:
+                        update_sql = """
+                            UPDATE job_offers
+                            SET position = ?, company_name = ?, remote_percentage = ?,
+                                salary_from = ?, salary_to = ?, locations = ?,
+                                company_logo_dark_url = ?, timestamp = ?
+                            WHERE offer_id = ?
+                        """
+                        cursor.execute(update_sql, offer_data) # Use original tuple order for UPDATE
+                        updated_count += 1
+                    except Exception as update_err:
+                         logger.error(f"Failed to UPDATE offer_id {offer_id}: {update_err}", exc_info=True)
+                         # Decide if you want to stop the whole process or just log and continue
+                         # For now, log and continue
+
+            # Commit all changes at the end
+            conn.commit()
+            logger.info(f"Successfully processed {total_fetched} offers. New: {new_count}, Updated: {updated_count}")
+
+    except sqlite3.Error as db_err:
+        logger.error(f"Database error during offer storage: {db_err}", exc_info=True)
         return jsonify({
-            "status": "error", 
-            "message": f"Failed to store offers: {str(e)}"
+            "status": "error",
+            "message": f"Database error during storage: {str(db_err)}"
         }), 500
+    except Exception as e:
+        logger.exception(f"Unexpected error during offer storage process: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to store offers due to unexpected error: {str(e)}"
+        }), 500
+
+    # 4. Return Success Summary
+    return jsonify({
+        "status": "success",
+        "total_fetched": total_fetched,
+        "new_offers": new_count,
+        "updated_offers": updated_count,
+        "timestamp": timestamp.isoformat()
+    })
+
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -441,12 +492,13 @@ def health_check():
     try:
         # Test connection using the context manager
         with get_db_conn() as conn:
-            # Simple query to ensure the connection is truly working
-            conn.execute("SELECT 1")
+            # Simple query to ensure the connection is truly working and table exists
+            # We query the table we modified to ensure schema changes didn't break it
+            conn.execute("SELECT COUNT(*) FROM job_offers LIMIT 1")
     except Exception as e:
         db_status = f"error: {str(e)}"
         is_healthy = False
-        logger.error(f"Health check failed due to DB connection issue: {e}") # Log error specifically for health check failure
+        logger.error(f"Health check failed due to DB issue: {e}") # Log error specifically for health check failure
 
     status_code = 200 if is_healthy else 503
     response_body = {
@@ -464,13 +516,12 @@ def health_check():
 
 # --- Application Entry Point ---
 if __name__ == '__main__':
-    # Ensure the database directory exists (handled within get_db_conn now)
-    # Initialize the database schema (fetch_history table)
+    # Initialize/Verify the database schema (creates tables and adds columns if needed)
     init_db()
 
     # Log startup information
     logger.info("-----------------------------------------")
-    logger.info("Starting Manfred Job Fetcher (Simplified)")
+    logger.info("Starting Manfred Job Fetcher")
     logger.info(f"Database Path: {CONFIG['DB_PATH']}")
     logger.info(f"External API Endpoint: {CONFIG['EXTERNAL_ENDPOINT_URL']}")
     logger.info("Endpoints available: /raw-offers, /store-offers, /health, /api/docs")
@@ -478,6 +529,7 @@ if __name__ == '__main__':
 
     # Run Flask App
     # Use waitress or gunicorn in production instead of app.run()
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Example: waitress-serve --host 0.0.0.0 --port 5000 app:app
+    app.run(host='0.0.0.0', port=5000, debug=False) # debug=False for production/testing
 
 # --- END OF FILE app.py ---
