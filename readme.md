@@ -7,27 +7,45 @@ A simple Dockerized application designed to fetch active job offers from GetManf
 ## Features
 
 - Fetches currently active job offers (in Spanish) from Manfred's public API.
-- Can be adapted to retrieve detailed data for individual job offers.
+- Retrieves detailed data for individual job offers, including skills information.
 - Runs as an isolated Docker container.
 - Configurable through environment variables (API endpoints, notification webhook).
-- Includes a simple SQLite database (`/app/data/history.db`) for optional logging or state persistence.
-- (Example Implementation) Can be triggered via a `/trigger` HTTP endpoint using Flask.
+- Includes a SQLite database (`/app/data/history.db`) for job history and skills data persistence.
+- Provides a web UI for database browsing via SQLite Web container.
+- REST API endpoints for triggering actions and retrieving data.
+- Sends custom-formatted notifications to Discord webhooks.
 
 ---
 
-## API Endpoints Used
+## API Endpoints
+
+This tool provides several REST API endpoints:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/raw-offers` | GET | Fetches raw data from the Manfred API without processing |
+| `/store-offers` | GET | Fetches, stores, and processes job offers and skills |
+| `/process-job-details` | GET | Processes pending job offers to retrieve skills information |
+| `/job-skills/{offer_id}` | GET | Retrieves stored skills for a specific job offer |
+| `/send-notifications` | GET | Sends pending notifications to the configured webhook |
+| `/health` | GET | System health check, including database connectivity |
+| `/api/docs` | GET | Swagger UI documentation for all endpoints |
+
+---
+
+## External APIs Used
 
 This tool primarily interacts with the following GetManfred public API endpoints:
 
 1. **Offers List:**  
    `https://www.getmanfred.com/api/v2/public/offers?lang=ES&onlyActive=true`  
-   **Purpose:** Fetches the list of currently active job offers in Spanish. Provides basic information including the `offerId` (Job ID) needed for detailed lookups.
+   **Purpose:** Fetches the list of currently active job offers in Spanish.
 
 2. **Offer Details:**  
    `https://www.getmanfred.com/_next/data/BUILD_ID_HASH/es/job-offers/{job-id}/{job-name}.json`  
    **Purpose:** Fetches detailed information about a specific job offer.  
    **Placeholders:**
-   - `BUILD_ID_HASH`: This is a dynamic hash from the website’s build (e.g., `BIDHCAYe6i8X-XyfefcMo`). This **can change without notice**, potentially breaking detail fetching.
+   - `BUILD_ID_HASH`: This is a dynamic hash from the website's build (e.g., `BIDHCAYe6i8X-XyfefcMo`). This **can change without notice**, potentially breaking detail fetching.
    - `{job-id}`: The unique ID of the job offer (from the Offers List).
    - `{job-name}`: The URL-friendly slug or name of the job offer.
 
@@ -37,7 +55,7 @@ This tool primarily interacts with the following GetManfred public API endpoints
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) installed on your system.
+- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) installed on your system.
 
 ---
 
@@ -52,9 +70,12 @@ The application is configured using environment variables when running the Docke
 | `BUILD_ID_HASH`           | Hash for detail API endpoints               | `BIDHCAYe6i8X-XyfefcMo`                                                 |
 | `DETAIL_ENDPOINT_PATTERN` | Pattern for detail endpoints                | Uses `BUILD_ID_HASH`                                                   |
 | `DB_PATH`                 | Path to SQLite database                     | `/app/data/history.db`                                                 |
+| `RESET_DB`                | Whether to reset the database on startup    | `false`                                                                |
 | `FETCH_INTERVAL`          | Time between fetches (seconds)             | `300`                                                                   |
 | `MAX_RETRIES`             | Maximum API request retries                | `3`                                                                     |
 | `RETRY_BACKOFF`           | Backoff factor for retries                 | `0.5`                                                                   |
+| `FLASK_ENV`               | Flask environment setting                  | `production`                                                           |
+| `FLASK_DEBUG`             | Flask debug mode                           | `0`                                                                    |
 
 You can define these in a `.env` file.
 
@@ -92,6 +113,16 @@ The easiest way to run the application is with Docker Compose:
    docker-compose down
    ```
 
+4. Access the SQLite Web UI to browse the database:
+   ```
+   http://localhost:8081
+   ```
+
+5. Access the API documentation:
+   ```
+   http://localhost:8080/api/docs
+   ```
+
 ---
 
 ## Running with Docker CLI and .env file
@@ -107,6 +138,18 @@ docker run -d \
   --name manfred-fetcher-instance \
   manfred-job-fetcher
 ```
+
+---
+
+## Database Schema
+
+The application uses SQLite with the following tables:
+
+1. **fetch_history**: Logs API requests and responses
+2. **job_offers**: Stores the main job offer data
+3. **job_skills**: Stores skills requirements for each job (must, nice, extra categories)
+
+The database is persisted on the host machine in the `./data` directory.
 
 ---
 
@@ -126,16 +169,18 @@ docker run -d \
 
 ---
 
-## Running the Container (Manual Mode)
+## Discord Notifications
 
-You need to provide the necessary environment variables and mount a volume for data persistence (the SQLite database):
+The application can send notifications about new job offers to a Discord webhook. Each notification includes:
 
-```bash
-docker run -d \
-  -p 8080:5000 \
-  -e EXTERNAL_ENDPOINT_URL="https://www.getmanfred.com/api/v2/public/offers?lang=ES&onlyActive=true" \
-  -e DISCORD_WEBHOOK_URL="YOUR_NOTIFICATION_WEBHOOK_URL_HERE" \
-  -v $(pwd)/data:/app/data \
-  --name manfred-fetcher-instance \
-  manfred-job-fetcher
+- Job position and company
+- Salary information (if available)
+- Remote work percentage
+- Location information
+- Must-have and nice-to-have skills (when available)
+- Direct link to the offer on the Manfred website
+
+Configure the webhook URL in the `.env` file:
+```
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/your-webhook-url-here
 ```
