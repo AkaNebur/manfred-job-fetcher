@@ -2,6 +2,10 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
+# Install curl for healthcheck and dependencies
+RUN apt-get update && apt-get install -y curl && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -12,6 +16,7 @@ RUN mkdir -p /app/data
 # Copy application code
 COPY app.py .
 COPY init_db.py .
+COPY swagger.py .
 
 # Expose the port Flask will run on
 EXPOSE 5000

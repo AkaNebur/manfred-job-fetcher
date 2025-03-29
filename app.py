@@ -8,6 +8,7 @@ import time
 from flask import Flask, request, jsonify
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from swagger import setup_swagger
 
 # Configure logging
 logging.basicConfig(
@@ -18,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
+
+# Setup Swagger documentation
+swagger = setup_swagger(app)
 
 # Configuration from environment variables
 EXTERNAL_ENDPOINT_URL = os.getenv('EXTERNAL_ENDPOINT_URL', 'https://www.getmanfred.com/api/v2/public/offers?lang=ES&onlyActive=true')
@@ -298,7 +302,47 @@ def fetch_job_offers():
 
 @app.route('/trigger', methods=['GET', 'POST'])
 def trigger_fetch():
-    """HTTP endpoint to trigger job offer fetching."""
+    """
+    HTTP endpoint to trigger job offer fetching.
+    ---
+    tags:
+      - Job Offers
+    summary: Trigger fetching of new job offers
+    description: Fetches currently active job offers from Manfred API
+    responses:
+      200:
+        description: Successful operation
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              example: success
+            new_offers_count:
+              type: integer
+              example: 5
+            new_offers:
+              type: array
+              items:
+                type: object
+                properties:
+                  offer_id:
+                    type: string
+                  title:
+                    type: string
+                  company:
+                    type: string
+      500:
+        description: Error fetching job offers
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              example: error
+            message:
+              type: string
+    """
     try:
         result = fetch_job_offers()
         if result is None:
@@ -315,7 +359,39 @@ def trigger_fetch():
 
 @app.route('/fetch-details', methods=['GET', 'POST'])
 def trigger_fetch_details():
-    """HTTP endpoint to trigger fetching details for offers that don't have them yet."""
+    """
+    HTTP endpoint to trigger fetching details for offers that don't have them yet.
+    ---
+    tags:
+      - Job Offers
+    summary: Fetch details for job offers
+    description: Fetches detailed information for job offers that don't have details yet
+    responses:
+      200:
+        description: Successful operation
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              example: success
+            offers_without_details:
+              type: integer
+              example: 10
+            updated_count:
+              type: integer
+              example: 8
+      500:
+        description: Error fetching details
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              example: error
+            message:
+              type: string
+    """
     try:
         offers = get_offers_without_details()
         updated_count = 0
@@ -339,7 +415,38 @@ def trigger_fetch_details():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Simple health check endpoint."""
+    """
+    Simple health check endpoint.
+    ---
+    tags:
+      - System
+    summary: System health check
+    description: Checks if the system is healthy and returns configuration details
+    responses:
+      200:
+        description: System health information
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              example: healthy
+            timestamp:
+              type: string
+              format: date-time
+            database:
+              type: string
+              example: connected
+            config:
+              type: object
+              properties:
+                external_endpoint:
+                  type: string
+                discord_webhook_configured:
+                  type: boolean
+                fetch_interval:
+                  type: integer
+    """
     # Check database connection
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -362,7 +469,66 @@ def health_check():
 
 @app.route('/stats', methods=['GET'])
 def stats():
-    """Endpoint to get statistics about fetched offers."""
+    """
+    Endpoint to get statistics about fetched offers.
+    ---
+    tags:
+      - System
+    summary: System statistics
+    description: Returns statistics about fetched job offers and recent API calls
+    responses:
+      200:
+        description: System statistics
+        schema:
+          type: object
+          properties:
+            offers:
+              type: object
+              properties:
+                total:
+                  type: integer
+                  example: 150
+                notified:
+                  type: integer
+                  example: 120
+                with_details:
+                  type: integer
+                  example: 130
+                unnotified:
+                  type: integer
+                  example: 30
+                without_details:
+                  type: integer
+                  example: 20
+            recent_fetches:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  timestamp:
+                    type: string
+                    format: date-time
+                  endpoint:
+                    type: string
+                  status_code:
+                    type: integer
+                  response_size:
+                    type: integer
+                  error:
+                    type: string
+      500:
+        description: Error getting statistics
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              example: error
+            message:
+              type: string
+    """
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
