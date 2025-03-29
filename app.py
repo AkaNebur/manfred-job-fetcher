@@ -17,6 +17,7 @@ CONFIG = {
     'DB_PATH': os.getenv('DB_PATH', '/app/data/history.db'),
     'MAX_RETRIES': int(os.getenv('MAX_RETRIES', '3')),
     'RETRY_BACKOFF': float(os.getenv('RETRY_BACKOFF', '0.5')),
+    'DISCORD_WEBHOOK_URL': os.getenv('DISCORD_WEBHOOK_URL', ''),
 }
 
 # --- Logging Setup ---
@@ -41,6 +42,114 @@ adapter = HTTPAdapter(max_retries=retry_strategy)
 http_session = requests.Session()
 http_session.mount("http://", adapter)
 http_session.mount("https://", adapter)
+
+# --- Discord Webhook Integration ---
+def send_discord_webhook(offer):
+    """
+    Send a job offer to Discord using webhook.
+    
+    Args:
+        offer (dict): Job offer data to send to Discord
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    webhook_url = CONFIG['DISCORD_WEBHOOK_URL']
+    if not webhook_url:
+        logger.warning("Discord webhook URL not configured. Skipping notification.")
+        return False
+    
+    try:
+        # Extract key job offer details for the message
+        position = offer.get('position', 'Unknown Position')
+        company_data = offer.get('company', {})
+        company_name = company_data.get('name', 'Unknown Company')
+        
+        # Format salary range if available
+        salary_from = offer.get('salaryFrom')
+        salary_to = offer.get('salaryTo')
+        salary_text = ""
+        if salary_from and salary_to:
+            salary_text = f"💰 {salary_from}€ - {salary_to}€"
+        elif salary_from:
+            salary_text = f"💰 From {salary_from}€"
+        elif salary_to:
+            salary_text = f"💰 Up to {salary_to}€"
+        
+        # Format remote percentage
+        remote_percentage = offer.get('remotePercentage')
+        remote_text = f"🏠 {remote_percentage}% Remote" if remote_percentage is not None else ""
+        
+        # Format locations
+        locations = offer.get('locations', [])
+        locations_text = f"📍 {', '.join(locations)}" if locations else ""
+        
+        # Get offer ID for job link
+        offer_id = offer.get('id')
+        offer_slug = offer.get('slug', 'job')
+        job_url = f"https://www.getmanfred.com/es/job-offers/{offer_id}/{offer_slug}"
+        
+        # Get logo URL if available
+        logo_url = None
+        if company_data and 'logoDark' in company_data and 'url' in company_data['logoDark']:
+            logo_url = company_data['logoDark']['url']
+        
+        # Create Discord embed
+        embed = {
+            "title": f"{position} at {company_name}",
+            "description": f"{salary_text}\n{remote_text}\n{locations_text}\n\n[View on Manfred]({job_url})",
+            "color": 5814783,  # Blue color
+            "timestamp": datetime.now().isoformat(),
+            "footer": {
+                "text": "Via Manfred Job Fetcher"
+            }
+        }
+        
+        # Add thumbnail if logo is available
+        if logo_url:
+            embed["thumbnail"] = {"url": logo_url}
+        
+        # Create webhook payload
+        webhook_data = {
+            "content": "📢 New Job Offer",
+            "embeds": [embed]
+        }
+        
+        # Send to Discord
+        response = http_session.post(
+            webhook_url,
+            json=webhook_data,
+            headers={"Content-Type": "application/json"}
+        )
+        response.raise_for_status()
+        
+        logger.info(f"Sent job offer notification to Discord: {position} at {company_name}")
+        return True
+    
+    except Exception as e:
+        logger.error(f"Failed to send Discord webhook: {e}", exc_info=True)
+        return False
+
+def send_webhook_batch(offers, batch_size=5):
+    """
+    Send a batch of new offers to Discord webhook.
+    
+    Args:
+        offers (list): List of job offer dictionaries
+        batch_size (int): Maximum number of offers to send
+    
+    Returns:
+        int: Number of offers sent successfully
+    """
+    if not offers:
+        return 0
+    
+    sent_count = 0
+    for offer in offers[:batch_size]:  # Limit to batch_size
+        if send_discord_webhook(offer):
+            sent_count += 1
+    
+    return sent_count
 
 # --- Database Handling ---
 @contextmanager
@@ -102,7 +211,7 @@ def init_db():
             )
             ''')
 
-            # Create table for job offers - including the new column
+            # Create table for job offers - including the notification flag
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS job_offers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, -- Using standard auto-increment PK
@@ -114,13 +223,17 @@ def init_db():
                 salary_to INTEGER,
                 locations TEXT,
                 company_logo_dark_url TEXT,           -- New column for dark logo URL
-                timestamp TIMESTAMP NOT NULL
+                timestamp TIMESTAMP NOT NULL,
+                notification_sent BOOLEAN DEFAULT 0    -- Flag for tracking webhook notifications
             )
             ''')
 
             # --- Schema Migration: Ensure new columns exist ---
             # Add company_logo_dark_url if it's missing from an existing table
             _add_column_if_not_exists(cursor, 'job_offers', 'company_logo_dark_url', 'TEXT')
+            
+            # Add notification_sent flag if it's missing
+            _add_column_if_not_exists(cursor, 'job_offers', 'notification_sent', 'BOOLEAN DEFAULT 0')
 
             # Example for future: How to add another column later
             # _add_column_if_not_exists(cursor, 'job_offers', 'another_new_field', 'INTEGER')
@@ -273,6 +386,9 @@ def store_offers():
                 updated_offers:
                   type: integer
                   example: 40
+                webhook_sent:
+                  type: integer
+                  example: 5
                 timestamp:
                   type: string
                   format: date-time
@@ -340,6 +456,7 @@ def store_offers():
     updated_count = 0
     timestamp = datetime.now()
     total_fetched = len(offers)
+    new_offers = []  # Track new offers for webhook notification
 
     try:
         with get_db_conn() as conn:
@@ -379,12 +496,15 @@ def store_offers():
                     insert_sql = """
                         INSERT INTO job_offers
                         (offer_id, position, company_name, remote_percentage, salary_from, salary_to,
-                         locations, company_logo_dark_url, timestamp)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         locations, company_logo_dark_url, timestamp, notification_sent)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                     """
                     # Note: For INSERT, offer_id is first in the VALUES list
                     cursor.execute(insert_sql, (offer_id,) + offer_data[:-1]) # Reorder tuple for INSERT
                     new_count += 1
+                    
+                    # Add to new offers list for Discord webhook
+                    new_offers.append(offer)
                 except sqlite3.IntegrityError:
                     # offer_id already exists, so UPDATE instead
                     try:
@@ -419,14 +539,144 @@ def store_offers():
             "message": f"Failed to store offers due to unexpected error: {str(e)}"
         }), 500
 
-    # 4. Return Success Summary
+    # 4. Send new offers to Discord webhook
+    webhook_sent = 0
+    if new_offers and CONFIG['DISCORD_WEBHOOK_URL']:
+        webhook_sent = send_webhook_batch(new_offers)
+        
+        # Update notification_sent flag in database
+        if webhook_sent > 0:
+            try:
+                with get_db_conn() as conn:
+                    for offer in new_offers[:webhook_sent]:  # Only mark the ones we successfully sent
+                        conn.execute(
+                            "UPDATE job_offers SET notification_sent = 1 WHERE offer_id = ?",
+                            (offer.get('id'),)
+                        )
+                    conn.commit()
+            except Exception as e:
+                logger.error(f"Error updating notification status: {e}")
+                # Continue anyway - this is not critical
+
+    # 5. Return Success Summary
     return jsonify({
         "status": "success",
         "total_fetched": total_fetched,
         "new_offers": new_count,
         "updated_offers": updated_count,
+        "webhook_sent": webhook_sent,
         "timestamp": timestamp.isoformat()
     })
+
+@app.route('/send-notifications', methods=['GET'])
+def send_pending_notifications():
+    """
+    Send Discord webhook notifications for any pending job offers.
+    ---
+    tags:
+      - Notifications
+    summary: Send Discord webhook notifications for pending job offers
+    description: Checks the database for job offers that haven't had notifications sent yet and sends them to Discord.
+    responses:
+      200:
+        description: Successfully processed pending notifications.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: success
+                offers_sent:
+                  type: integer
+                  example: 5
+                pending_offers:
+                  type: integer
+                  example: 0
+      500:
+        description: Error processing or sending notifications.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: error
+                message:
+                  type: string
+                  example: Failed to send notifications
+    """
+    if not CONFIG['DISCORD_WEBHOOK_URL']:
+        return jsonify({
+            "status": "error", 
+            "message": "Discord webhook URL not configured"
+        }), 400
+    
+    try:
+        # Get pending offers from the database
+        pending_offers = []
+        with get_db_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT offer_id, position, company_name, remote_percentage, 
+                       salary_from, salary_to, locations, company_logo_dark_url 
+                FROM job_offers
+                WHERE notification_sent = 0
+                ORDER BY timestamp DESC
+                LIMIT 10
+            """)
+            
+            pending_db_offers = cursor.fetchall()
+            
+            # Convert to list of dicts that match the API format
+            for offer_row in pending_db_offers:
+                offer_dict = {
+                    'id': offer_row[0],
+                    'position': offer_row[1],
+                    'company': {
+                        'name': offer_row[2],
+                        'logoDark': {
+                            'url': offer_row[7]
+                        } if offer_row[7] else {}
+                    },
+                    'remotePercentage': offer_row[3],
+                    'salaryFrom': offer_row[4],
+                    'salaryTo': offer_row[5],
+                    'locations': offer_row[6].split(', ') if offer_row[6] else [],
+                    'slug': f"job-{offer_row[0]}"  # Generate a simple slug
+                }
+                pending_offers.append(offer_dict)
+        
+        # Send notifications
+        offers_sent = 0
+        if pending_offers:
+            offers_sent = send_webhook_batch(pending_offers)
+            
+            # Update notification_sent flag
+            if offers_sent > 0:
+                with get_db_conn() as conn:
+                    for i in range(offers_sent):
+                        offer_id = pending_offers[i]['id']
+                        conn.execute(
+                            "UPDATE job_offers SET notification_sent = 1 WHERE offer_id = ?",
+                            (offer_id,)
+                        )
+                    conn.commit()
+        
+        return jsonify({
+            "status": "success",
+            "offers_sent": offers_sent,
+            "pending_offers": len(pending_offers) - offers_sent
+        })
+    
+    except Exception as e:
+        logger.exception(f"Error sending pending notifications: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to send notifications: {str(e)}"
+        }), 500
 
 
 @app.route('/health', methods=['GET'])
@@ -458,6 +708,9 @@ def health_check():
                 database_status:
                   type: string
                   example: connected
+                webhook_configured:
+                  type: boolean
+                  example: true
                 config:
                   type: object
                   properties:
@@ -500,12 +753,15 @@ def health_check():
         is_healthy = False
         logger.error(f"Health check failed due to DB issue: {e}") # Log error specifically for health check failure
 
+    webhook_configured = bool(CONFIG['DISCORD_WEBHOOK_URL'])
+
     status_code = 200 if is_healthy else 503
     response_body = {
         "status": "healthy" if is_healthy else "unhealthy",
         "timestamp": datetime.now().isoformat(),
         "database_path": CONFIG['DB_PATH'],
         "database_status": db_status,
+        "webhook_configured": webhook_configured,
         "config": { # Show only relevant config
             "external_endpoint_url": CONFIG['EXTERNAL_ENDPOINT_URL'],
             "max_retries": CONFIG['MAX_RETRIES'],
@@ -524,7 +780,8 @@ if __name__ == '__main__':
     logger.info("Starting Manfred Job Fetcher")
     logger.info(f"Database Path: {CONFIG['DB_PATH']}")
     logger.info(f"External API Endpoint: {CONFIG['EXTERNAL_ENDPOINT_URL']}")
-    logger.info("Endpoints available: /raw-offers, /store-offers, /health, /api/docs")
+    logger.info(f"Discord Webhook Configured: {bool(CONFIG['DISCORD_WEBHOOK_URL'])}")
+    logger.info("Endpoints available: /raw-offers, /store-offers, /send-notifications, /health, /api/docs")
     logger.info("-----------------------------------------")
 
     # Run Flask App
