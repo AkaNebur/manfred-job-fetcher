@@ -9,6 +9,7 @@ from config import CONFIG # Base configuration
 from database import init_db, check_db_connection # DB initializer and check
 from swagger import setup_swagger # Swagger setup
 from routes import api_bp # Import the Blueprint with API routes
+from scheduler import initialize_scheduler # Import scheduler initializer
 
 # --- Logging Setup ---
 # Configure logging early
@@ -63,6 +64,14 @@ def create_app():
     except Exception as e:
         logger.error(f"Failed to setup Swagger: {e}", exc_info=True)
         # Continue running even if Swagger fails
+        
+    # Initialize the scheduler
+    try:
+        initialize_scheduler(app)
+        logger.info("Scheduler initialized. Automatic fetch will run every hour.")
+    except Exception as e:
+        logger.error(f"Failed to initialize scheduler: {e}", exc_info=True)
+        # Continue running even if scheduler initialization fails
 
     logger.info("Application components initialized.")
     return app
@@ -79,6 +88,7 @@ if __name__ == '__main__':
     logger.info(f"External API: {CONFIG['EXTERNAL_ENDPOINT_URL']}")
     logger.info(f"Webhook Configured: {bool(CONFIG['DISCORD_WEBHOOK_URL'])}")
     logger.info(f"Detail Build Hash: {CONFIG['BUILD_ID_HASH']}")
+    logger.info(f"Fetch Interval: {CONFIG['FETCH_INTERVAL']} seconds ({CONFIG['FETCH_INTERVAL']/60:.1f} minutes)")
     logger.info("Registered Routes:")
     for rule in app.url_map.iter_rules():
         if rule.endpoint != 'static': # Exclude static rule

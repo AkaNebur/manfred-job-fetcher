@@ -71,6 +71,7 @@ def _build_discord_embed(offer_dict):
 
     if info_lines:
         fields.append({
+            "name": "-----",
             "value": "\n".join(info_lines),
             "inline": False # Explicitly false, or omit entirely for default non-inline
         })
@@ -128,7 +129,7 @@ def send_discord_notification(offer_dict):
 
     webhook_data = {
         # Content provides a pingable text part outside the embed
-        "content": "",
+        "content": f"📢 New Job Offer: **{offer_dict.get('position', 'N/A')}** at **{offer_dict.get('company', {}).get('name', 'N/A')}**",
         "embeds": [embed]
     }
 

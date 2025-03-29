@@ -17,6 +17,7 @@ RUN mkdir -p /app/data
 COPY app.py .
 COPY swagger.py .
 COPY config.py .
+COPY scheduler.py .
 COPY database.py .
 COPY routes.py .
 COPY services.py .

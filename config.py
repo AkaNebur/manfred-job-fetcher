@@ -17,7 +17,7 @@ def load_config():
         'BUILD_ID_HASH': os.getenv('BUILD_ID_HASH', 'BIDHCAYe6i8X-XyfefcMo'),
         'DETAIL_ENDPOINT_PATTERN': detail_pattern,
         'RESET_DB': os.getenv('RESET_DB', 'false').lower() in ('true', '1', 't'), # Added for completeness from readme
-        'FETCH_INTERVAL': int(os.getenv('FETCH_INTERVAL', '300')), # Added for completeness from readme
+        'FETCH_INTERVAL': int(os.getenv('FETCH_INTERVAL', '3600')), # Default to 1 hour (3600 seconds)
         # Flask specific configs might stay in app.py or move here if needed globally
         # 'FLASK_ENV': os.getenv('FLASK_ENV', 'production'),
         # 'FLASK_DEBUG': os.getenv('FLASK_DEBUG', '0'),
