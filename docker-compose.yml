@@ -11,6 +11,7 @@ services:
       - "8080:5000"
     volumes:
       - ./data:/app/data
+      # Removed direct mounting of Python files to avoid conflicts with Docker build
     env_file:
       - .env
     healthcheck:

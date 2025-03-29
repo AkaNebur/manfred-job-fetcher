@@ -13,9 +13,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Create data directory for SQLite database
 RUN mkdir -p /app/data
 
-# Copy application code
+# Copy application code - updated to include all Python modules
 COPY app.py .
 COPY swagger.py .
+COPY config.py .
+COPY database.py .
+COPY routes.py .
+COPY services.py .
+COPY manfred_api.py .
+COPY discord_notifier.py .
 
 # Create startup script to reset DB
 COPY entrypoint.sh .
