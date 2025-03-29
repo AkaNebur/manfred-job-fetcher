@@ -1,417 +1,382 @@
+# --- START OF FILE app.py ---
 import os
 import sqlite3
 import json
 import logging
 from datetime import datetime
+from contextlib import contextmanager
 import requests
-import time
-from flask import Flask, request, jsonify
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from swagger import setup_swagger
+from flask import Flask, jsonify, request
+from swagger import setup_swagger # Assuming swagger.py exists and is correct
 
-# Configure logging
+# --- Configuration ---
+CONFIG = {
+    'EXTERNAL_ENDPOINT_URL': os.getenv('EXTERNAL_ENDPOINT_URL', 'https://www.getmanfred.com/api/v2/public/offers?lang=ES&onlyActive=true'),
+    'DB_PATH': os.getenv('DB_PATH', '/app/data/history.db'),
+    'MAX_RETRIES': int(os.getenv('MAX_RETRIES', '3')),
+    'RETRY_BACKOFF': float(os.getenv('RETRY_BACKOFF', '0.5')),
+}
+
+# --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Initialize Flask app
+# --- Flask App and Swagger Setup ---
 app = Flask(__name__)
+swagger = setup_swagger(app) # Setup Swagger using the simplified config
 
-# Setup Swagger documentation
-swagger = setup_swagger(app)
-
-# Configuration from environment variables
-EXTERNAL_ENDPOINT_URL = os.getenv('EXTERNAL_ENDPOINT_URL', 'https://www.getmanfred.com/api/v2/public/offers?lang=ES&onlyActive=true')
-DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
-# The BUILD_ID_HASH might need to be updated periodically if it changes
-BUILD_ID_HASH = os.getenv('BUILD_ID_HASH', 'BIDHCAYe6i8X-XyfefcMo')  # Example value
-DETAIL_ENDPOINT_PATTERN = os.getenv(
-    'DETAIL_ENDPOINT_PATTERN', 
-    f'https://www.getmanfred.com/_next/data/{BUILD_ID_HASH}/es/job-offers/{{offer_id}}/{{offer_slug}}.json'
-)
-DB_PATH = os.getenv('DB_PATH', '/app/data/history.db')
-FETCH_INTERVAL = int(os.getenv('FETCH_INTERVAL', '300'))  # Default: 5 minutes
-MAX_RETRIES = int(os.getenv('MAX_RETRIES', '3'))
-RETRY_BACKOFF = float(os.getenv('RETRY_BACKOFF', '0.5'))
-
-# Configure requests with retry capability
+# --- Requests Session with Retries ---
 retry_strategy = Retry(
-    total=MAX_RETRIES,
-    backoff_factor=RETRY_BACKOFF,
+    total=CONFIG['MAX_RETRIES'],
+    backoff_factor=CONFIG['RETRY_BACKOFF'],
     status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET"]
+    allowed_methods=["GET", "POST"] # Keep POST in case used elsewhere, low overhead
 )
 adapter = HTTPAdapter(max_retries=retry_strategy)
 http_session = requests.Session()
 http_session.mount("http://", adapter)
 http_session.mount("https://", adapter)
 
-# Import and run database initialization
-from init_db import init_db
+# --- Database Handling ---
+@contextmanager
+def get_db_conn():
+    """Provides a database connection context."""
+    conn = None
+    db_path = CONFIG['DB_PATH']
+    # Ensure directory exists before connecting
+    db_dir = os.path.dirname(db_path)
+    if db_dir and not os.path.exists(db_dir):
+         try:
+             os.makedirs(db_dir, exist_ok=True)
+             logger.info(f"Created database directory: {db_dir}")
+         except OSError as e:
+             logger.error(f"Error creating database directory {db_dir}: {e}")
+             # Decide if this is fatal - for health check, maybe not, but logging might fail.
+             # For simplicity, we'll proceed but log the error.
+
+    try:
+        # Use a timeout for connection attempts
+        conn = sqlite3.connect(db_path, timeout=10)
+        # No need for row_factory if just checking connection or simple logging
+        # conn.row_factory = sqlite3.Row
+        yield conn
+    except Exception as e:
+        logger.error(f"Database connection error to {db_path}: {e}")
+        raise # Re-raise the exception after logging
+    finally:
+        if conn:
+            conn.close()
+
+def init_db():
+    """Initialize the SQLite database with tables."""
+    logger.info(f"Initializing database at {CONFIG['DB_PATH']}...")
+    try:
+        with get_db_conn() as conn:
+            cursor = conn.cursor()
+            # Create table for fetch history
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS fetch_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP NOT NULL,
+                endpoint TEXT NOT NULL,
+                status_code INTEGER,
+                response_size INTEGER,
+                error TEXT
+            )
+            ''')
+            
+            # Drop job_offers table if it exists but has wrong schema
+            try:
+                # Try to query the table to check its structure
+                cursor.execute("SELECT offer_id, position, company_name FROM job_offers LIMIT 1")
+            except sqlite3.OperationalError:
+                # Table doesn't exist or has wrong schema, drop it if it exists
+                logger.info("Job offers table has wrong schema or doesn't exist - recreating it")
+                cursor.execute("DROP TABLE IF EXISTS job_offers")
+            
+            # Create table for job offers
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS job_offers (
+                id INTEGER PRIMARY KEY,
+                offer_id INTEGER NOT NULL,
+                position TEXT NOT NULL,
+                company_name TEXT NOT NULL,
+                remote_percentage INTEGER,
+                salary_from INTEGER,
+                salary_to INTEGER,
+                locations TEXT,
+                timestamp TIMESTAMP NOT NULL,
+                UNIQUE(offer_id)
+            )
+            ''')
+            
+            conn.commit()
+            logger.info("Database initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}", exc_info=True)
+        # Depending on severity, you might want to exit the application here
+        # raise SystemExit(f"Could not initialize database: {e}")
+
 
 def log_fetch(endpoint, status_code=None, response_size=None, error=None):
     """Log API fetch attempts to the database."""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "INSERT INTO fetch_history (timestamp, endpoint, status_code, response_size, error) VALUES (?, ?, ?, ?, ?)",
-            (datetime.now(), endpoint, status_code, response_size, error)
-        )
-        
-        conn.commit()
-        conn.close()
+        with get_db_conn() as conn:
+            conn.execute(
+                "INSERT INTO fetch_history (timestamp, endpoint, status_code, response_size, error) VALUES (?, ?, ?, ?, ?)",
+                (datetime.now(), endpoint, status_code, response_size, str(error) if error else None)
+            )
+            conn.commit()
     except Exception as e:
-        logger.error(f"Failed to log fetch: {e}")
+        # Log DB error, but don't let it stop the main flow
+        logger.error(f"Failed to log fetch attempt for {endpoint}: {e}")
 
-def save_basic_offer(offer_id, title, company, location=None, remote=None, offer_url=None, slug=None):
-    """Save or update basic job offer details in the database."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # Check if the offer already exists
-    cursor.execute("SELECT * FROM job_offers WHERE offer_id = ?", (offer_id,))
-    existing = cursor.fetchone()
-    
-    now = datetime.now()
-    
-    if existing:
-        # Update the existing record
-        cursor.execute(
-            "UPDATE job_offers SET title = ?, company = ?, location = ?, remote = ?, last_seen = ?, offer_url = ?, slug = ? WHERE offer_id = ?",
-            (title, company, location, remote, now, offer_url, slug, offer_id)
-        )
-        is_new = False
+
+# --- Core Logic Functions ---
+def _make_api_request(url, method='GET', json_payload=None, timeout=15):
+    """Makes an HTTP request with retries and logs the attempt."""
+    try:
+        if method.upper() == 'POST':
+             # Although no POST endpoint remains, keep for potential future use/robustness
+             response = http_session.post(url, json=json_payload, headers={"Content-Type": "application/json"}, timeout=timeout)
+        else: # Default to GET
+            response = http_session.get(url, timeout=timeout)
+
+        # Log before raising exception for status code
+        log_fetch(url, response.status_code, len(response.content))
+        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        return response
+    except requests.exceptions.RequestException as e:
+        status_code = e.response.status_code if hasattr(e, 'response') and e.response is not None else None
+        # Log the error condition
+        log_fetch(url, status_code=status_code, error=str(e))
+        logger.error(f"Request failed for {url}: {e}")
+        return None
+    except Exception as e:
+        # Catch any other unexpected errors during the request process
+        log_fetch(url, error=f"Unexpected error during request: {e}")
+        logger.exception(f"Unexpected error during request to {url}") # Log full traceback
+        return None
+
+
+# --- Flask Routes ---
+
+@app.route('/raw-offers', methods=['GET'])
+def get_raw_offers():
+    """
+    Fetches and returns the raw JSON data from the external Manfred API.
+    ---
+    tags:
+      - Raw Data
+    summary: Get raw job offers list from Manfred API
+    description: Directly fetches and returns the JSON response from the configured EXTERNAL_ENDPOINT_URL without processing or saving. Uses configured retries.
+    responses:
+      200:
+        description: Raw list of active job offers from the external API.
+        content:
+          application/json:
+            schema:
+              type: object # Or array, depending on the actual API response
+              description: Structure depends entirely on the external Manfred API response.
+      500:
+        description: Error fetching data from the external API after retries.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: error
+                message:
+                  type: string
+                  example: Failed to fetch data from external API
+      502:
+        description: Bad Gateway or invalid response from external API.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: error
+                message:
+                  type: string
+                  example: Received non-JSON or invalid response from external API
+    """
+    external_url = CONFIG['EXTERNAL_ENDPOINT_URL']
+    logger.info(f"Request received for raw offers from {external_url}")
+    response = _make_api_request(external_url)
+
+    if response:
+        try:
+            # Attempt to parse JSON - critical step
+            data = response.json()
+            # Return the parsed JSON data with the original status code potentially
+            # Flask's jsonify will set content-type to application/json
+            return jsonify(data)
+        except json.JSONDecodeError as e:
+             # Log the failure to parse
+             logger.error(f"Raw offers endpoint: Content from {external_url} is not valid JSON: {e}")
+             # Return a specific error for non-JSON response
+             return jsonify({"status": "error", "message": "Received non-JSON response from external API"}), 502 # 502 Bad Gateway seems appropriate
+        except Exception as e:
+             # Catch other potential errors during response processing
+             logger.exception(f"Unexpected error processing response from {external_url}")
+             return jsonify({"status": "error", "message": "Failed to process response from external API"}), 500
     else:
-        # Insert a new record
-        cursor.execute(
-            "INSERT INTO job_offers (offer_id, title, company, location, remote, first_seen, last_seen, offer_url, slug, notified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (offer_id, title, company, location, remote, now, now, offer_url, slug, False)
-        )
-        is_new = True
-    
-    conn.commit()
-    conn.close()
-    
-    return is_new
+        # _make_api_request failed (already logged)
+        return jsonify({"status": "error", "message": "Failed to fetch data from external API"}), 500
 
-def update_offer_details(offer_id, salary_min=None, salary_max=None, currency=None):
-    """Update a job offer with detailed information."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute(
-        "UPDATE job_offers SET salary_min = ?, salary_max = ?, currency = ?, details_fetched = 1 WHERE offer_id = ?",
-        (salary_min, salary_max, currency, offer_id)
-    )
-    
-    conn.commit()
-    conn.close()
-
-def get_unnotified_offers():
-    """Get all offers that haven't been notified yet."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # This allows accessing columns by name
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM job_offers WHERE notified = 0")
-    offers = [dict(row) for row in cursor.fetchall()]
-    
-    conn.close()
-    
-    return offers
-
-def get_offers_without_details():
-    """Get offers that haven't had their details fetched yet."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM job_offers WHERE details_fetched = 0")
-    offers = [dict(row) for row in cursor.fetchall()]
-    
-    conn.close()
-    
-    return offers
-
-def mark_as_notified(offer_id):
-    """Mark an offer as notified."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute("UPDATE job_offers SET notified = 1 WHERE offer_id = ?", (offer_id,))
-    
-    conn.commit()
-    conn.close()
-
-def send_discord_notification(offers):
-    """Send a notification about new job offers to Discord."""
-    if not DISCORD_WEBHOOK_URL:
-        logger.warning("Discord webhook URL not configured. Skipping notification.")
-        return False
-    
-    if not offers:
-        logger.info("No new offers to notify about.")
-        return True
-    
-    # Format the message
-    message = {
-        "content": f"🚨 Found {len(offers)} new job offers on Manfred!",
-        "embeds": []
-    }
-    
-    for offer in offers:
-        # Format salary information if available
-        salary_info = ""
-        if offer.get('salary_min') and offer.get('salary_max') and offer.get('currency'):
-            salary_info = f"\nSalary: {offer['salary_min']}-{offer['salary_max']} {offer['currency']}"
-        elif offer.get('salary_min') and offer.get('currency'):
-            salary_info = f"\nSalary: {offer['salary_min']}+ {offer['currency']}"
-        
-        # Format location information
-        location = offer.get('location', 'Unknown location')
-        if offer.get('remote'):
-            location += " (Remote available)"
-        
-        embed = {
-            "title": offer['title'],
-            "description": f"Company: {offer['company']}\nLocation: {location}{salary_info}",
-            "url": offer.get('offer_url', f"https://www.getmanfred.com/es/job-offers/{offer['offer_id']}"),
-            "color": 5814783,  # A nice blue color
-            "timestamp": datetime.now().isoformat()
-        }
-        message["embeds"].append(embed)
-    
-    try:
-        response = http_session.post(
-            DISCORD_WEBHOOK_URL,
-            json=message,
-            headers={"Content-Type": "application/json"},
-            timeout=10  # Set a timeout to avoid hanging
-        )
-        response.raise_for_status()
-        
-        # Mark offers as notified
-        for offer in offers:
-            mark_as_notified(offer['offer_id'])
-        
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send Discord notification: {e}")
-        return False
-
-def fetch_job_offer_details(offer_id, slug):
-    """Fetch detailed information for a specific job offer."""
-    try:
-        # Construct the detail endpoint URL
-        detail_url = DETAIL_ENDPOINT_PATTERN.format(offer_id=offer_id, offer_slug=slug)
-        
-        response = http_session.get(detail_url, timeout=10)
-        response.raise_for_status()
-        
-        offer_data = response.json()
-        log_fetch(detail_url, response.status_code, len(response.content))
-        
-        # Extract salary and other detailed information
-        offer_details = offer_data.get('pageProps', {}).get('jobOffer', {})
-        
-        salary_min = None
-        salary_max = None
-        currency = None
-        
-        if 'salary' in offer_details:
-            salary = offer_details['salary']
-            salary_min = salary.get('minAmount')
-            salary_max = salary.get('maxAmount')
-            currency = salary.get('currency')
-        
-        # Update the database with the detailed information
-        update_offer_details(offer_id, salary_min, salary_max, currency)
-        
-        return {
-            'offer_id': offer_id,
-            'salary_min': salary_min,
-            'salary_max': salary_max,
-            'currency': currency
-        }
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error fetching details for offer {offer_id}: {error_msg}")
-        log_fetch(detail_url if 'detail_url' in locals() else f"detail-endpoint-for-{offer_id}", error=error_msg)
-        return None
-
-def fetch_job_offers():
-    """Fetch job offers from Manfred API."""
-    try:
-        response = http_session.get(EXTERNAL_ENDPOINT_URL, timeout=10)
-        response.raise_for_status()
-        
-        offers_data = response.json()
-        log_fetch(EXTERNAL_ENDPOINT_URL, response.status_code, len(response.content))
-        
-        new_offers = []
-        
-        for offer in offers_data.get('offers', []):
-            offer_id = offer.get('offerId')
-            title = offer.get('title', 'Untitled Position')
-            company = offer.get('companyName', 'Unknown Company')
-            location = offer.get('location', {}).get('city')
-            remote = offer.get('remote')
-            slug = offer.get('slug')
-            offer_url = f"https://www.getmanfred.com/es/job-offers/{offer_id}/{slug}" if slug else None
-            
-            if offer_id:
-                is_new = save_basic_offer(offer_id, title, company, location, remote, offer_url, slug)
-                if is_new:
-                    new_offers.append({
-                        'offer_id': offer_id,
-                        'title': title,
-                        'company': company,
-                        'location': location,
-                        'remote': remote,
-                        'offer_url': offer_url,
-                        'slug': slug
-                    })
-        
-        # Fetch details for new offers (if slug is available)
-        for offer in new_offers:
-            if offer.get('slug'):
-                details = fetch_job_offer_details(offer['offer_id'], offer['slug'])
-                if details:
-                    offer.update(details)
-                # Add a small delay to avoid rate limiting
-                time.sleep(1)
-        
-        # Send notifications for new offers
-        if new_offers:
-            logger.info(f"Found {len(new_offers)} new job offers.")
-            send_discord_notification(new_offers)
-        else:
-            logger.info("No new job offers found.")
-        
-        return new_offers
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error fetching job offers: {error_msg}")
-        log_fetch(EXTERNAL_ENDPOINT_URL, error=error_msg)
-        return None
-
-@app.route('/trigger', methods=['GET', 'POST'])
-def trigger_fetch():
+@app.route('/store-offers', methods=['GET'])
+def store_offers():
     """
-    HTTP endpoint to trigger job offer fetching.
+    Fetches job offers from the Manfred API and stores them in the database.
     ---
     tags:
-      - Job Offers
-    summary: Trigger fetching of new job offers
-    description: Fetches currently active job offers from Manfred API
+      - Data Storage
+    summary: Fetch and store job offers in the database
+    description: Fetches job offers from the external API and stores them in the local database. Returns a summary of the operation.
     responses:
       200:
-        description: Successful operation
-        schema:
-          type: object
-          properties:
-            status:
-              type: string
-              example: success
-            new_offers_count:
-              type: integer
-              example: 5
-            new_offers:
-              type: array
-              items:
-                type: object
-                properties:
-                  offer_id:
-                    type: string
-                  title:
-                    type: string
-                  company:
-                    type: string
+        description: Successfully fetched and stored job offers.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: success
+                stored_count:
+                  type: integer
+                  example: 25
+                new_offers:
+                  type: integer
+                  example: 10
+                updated_offers:
+                  type: integer
+                  example: 15
+                timestamp:
+                  type: string
+                  format: date-time
       500:
-        description: Error fetching job offers
-        schema:
-          type: object
-          properties:
-            status:
-              type: string
-              example: error
-            message:
-              type: string
+        description: Error fetching or storing data.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: error
+                message:
+                  type: string
+                  example: Failed to fetch or store job offers
     """
-    try:
-        result = fetch_job_offers()
-        if result is None:
-            return jsonify({"status": "error", "message": "Failed to fetch job offers"}), 500
-        
+    external_url = CONFIG['EXTERNAL_ENDPOINT_URL']
+    logger.info(f"Request received to fetch and store offers from {external_url}")
+    
+    # Fetch data from external API
+    response = _make_api_request(external_url)
+    
+    if not response:
         return jsonify({
-            "status": "success",
-            "new_offers_count": len(result),
-            "new_offers": result
-        })
-    except Exception as e:
-        logger.exception("Error in trigger endpoint")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-@app.route('/fetch-details', methods=['GET', 'POST'])
-def trigger_fetch_details():
-    """
-    HTTP endpoint to trigger fetching details for offers that don't have them yet.
-    ---
-    tags:
-      - Job Offers
-    summary: Fetch details for job offers
-    description: Fetches detailed information for job offers that don't have details yet
-    responses:
-      200:
-        description: Successful operation
-        schema:
-          type: object
-          properties:
-            status:
-              type: string
-              example: success
-            offers_without_details:
-              type: integer
-              example: 10
-            updated_count:
-              type: integer
-              example: 8
-      500:
-        description: Error fetching details
-        schema:
-          type: object
-          properties:
-            status:
-              type: string
-              example: error
-            message:
-              type: string
-    """
+            "status": "error", 
+            "message": "Failed to fetch data from external API"
+        }), 500
+    
     try:
-        offers = get_offers_without_details()
+        # Parse the JSON response
+        offers = response.json()
+        
+        # Check if we have a valid list of offers
+        if not isinstance(offers, list):
+            return jsonify({
+                "status": "error", 
+                "message": "Invalid response format from external API - expected a list of offers"
+            }), 500
+        
+        # Store the offers in the database
+        new_count = 0
         updated_count = 0
+        timestamp = datetime.now()
         
-        for offer in offers:
-            if offer.get('slug'):
-                details = fetch_job_offer_details(offer['offer_id'], offer['slug'])
-                if details:
+        with get_db_conn() as conn:
+            cursor = conn.cursor()
+            
+            for offer in offers:
+                # Extract key fields from offer
+                offer_id = offer.get('id')
+                position = offer.get('position', 'Unknown')
+                company_name = offer.get('company', {}).get('name', 'Unknown')
+                remote_percentage = offer.get('remotePercentage', 0)
+                salary_from = offer.get('salaryFrom', 0)
+                salary_to = offer.get('salaryTo', 0)
+                
+                # Handle locations (convert list to comma-separated string)
+                locations = offer.get('locations', [])
+                locations_str = ', '.join(locations) if locations else ''
+                
+                try:
+                    # Try to insert the offer (will fail if offer_id already exists)
+                    cursor.execute(
+                        """
+                        INSERT INTO job_offers 
+                        (offer_id, position, company_name, remote_percentage, salary_from, salary_to, 
+                         locations, timestamp) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (offer_id, position, company_name, remote_percentage, salary_from, 
+                         salary_to, locations_str, timestamp)
+                    )
+                    new_count += 1
+                except sqlite3.IntegrityError:
+                    # Offer already exists, update it
+                    cursor.execute(
+                        """
+                        UPDATE job_offers 
+                        SET position = ?, company_name = ?, remote_percentage = ?, 
+                            salary_from = ?, salary_to = ?, locations = ?, 
+                            timestamp = ?
+                        WHERE offer_id = ?
+                        """,
+                        (position, company_name, remote_percentage, salary_from, 
+                         salary_to, locations_str, timestamp, offer_id)
+                    )
                     updated_count += 1
-                # Add a small delay to avoid rate limiting
-                time.sleep(1)
+            
+            # Commit all changes
+            conn.commit()
         
+        # Return a summary of the operation
         return jsonify({
             "status": "success",
-            "offers_without_details": len(offers),
-            "updated_count": updated_count
+            "stored_count": len(offers),
+            "new_offers": new_count,
+            "updated_offers": updated_count,
+            "timestamp": timestamp.isoformat()
         })
+    
+    except json.JSONDecodeError as e:
+        logger.error(f"Store offers endpoint: Content from {external_url} is not valid JSON: {e}")
+        return jsonify({
+            "status": "error", 
+            "message": "Received non-JSON response from external API"
+        }), 502
+        
     except Exception as e:
-        logger.exception("Error in fetch-details endpoint")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        logger.exception(f"Error storing offers: {e}")
+        return jsonify({
+            "status": "error", 
+            "message": f"Failed to store offers: {str(e)}"
+        }), 500
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -421,155 +386,98 @@ def health_check():
     tags:
       - System
     summary: System health check
-    description: Checks if the system is healthy and returns configuration details
+    description: Checks database connectivity for logging and returns basic configuration status.
     responses:
       200:
-        description: System health information
-        schema:
-          type: object
-          properties:
-            status:
-              type: string
-              example: healthy
-            timestamp:
-              type: string
-              format: date-time
-            database:
-              type: string
-              example: connected
-            config:
+        description: System is healthy.
+        content:
+          application/json:
+            schema:
               type: object
               properties:
-                external_endpoint:
+                status:
                   type: string
-                discord_webhook_configured:
-                  type: boolean
-                fetch_interval:
-                  type: integer
+                  example: healthy
+                timestamp:
+                  type: string
+                  format: date-time
+                database_path:
+                  type: string
+                  example: /app/data/history.db
+                database_status:
+                  type: string
+                  example: connected
+                config:
+                  type: object
+                  properties:
+                    external_endpoint_url:
+                      type: string
+                    max_retries:
+                      type: integer
+                    retry_backoff_factor:
+                      type: number
+      503:
+        description: Service Unavailable (e.g., database connection failed).
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: unhealthy
+                timestamp:
+                  type: string
+                  format: date-time
+                database_path:
+                  type: string
+                database_status:
+                  type: string
+                  example: "error: unable to open database file"
+
     """
-    # Check database connection
+    db_status = "connected"
+    is_healthy = True
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("SELECT 1")
-        conn.close()
-        db_status = "connected"
+        # Test connection using the context manager
+        with get_db_conn() as conn:
+            # Simple query to ensure the connection is truly working
+            conn.execute("SELECT 1")
     except Exception as e:
         db_status = f"error: {str(e)}"
-    
-    return jsonify({
-        "status": "healthy",
+        is_healthy = False
+        logger.error(f"Health check failed due to DB connection issue: {e}") # Log error specifically for health check failure
+
+    status_code = 200 if is_healthy else 503
+    response_body = {
+        "status": "healthy" if is_healthy else "unhealthy",
         "timestamp": datetime.now().isoformat(),
-        "database": db_status,
-        "config": {
-            "external_endpoint": EXTERNAL_ENDPOINT_URL,
-            "discord_webhook_configured": bool(DISCORD_WEBHOOK_URL),
-            "fetch_interval": FETCH_INTERVAL
+        "database_path": CONFIG['DB_PATH'],
+        "database_status": db_status,
+        "config": { # Show only relevant config
+            "external_endpoint_url": CONFIG['EXTERNAL_ENDPOINT_URL'],
+            "max_retries": CONFIG['MAX_RETRIES'],
+            "retry_backoff_factor": CONFIG['RETRY_BACKOFF']
         }
-    })
+    }
+    return jsonify(response_body), status_code
 
-@app.route('/stats', methods=['GET'])
-def stats():
-    """
-    Endpoint to get statistics about fetched offers.
-    ---
-    tags:
-      - System
-    summary: System statistics
-    description: Returns statistics about fetched job offers and recent API calls
-    responses:
-      200:
-        description: System statistics
-        schema:
-          type: object
-          properties:
-            offers:
-              type: object
-              properties:
-                total:
-                  type: integer
-                  example: 150
-                notified:
-                  type: integer
-                  example: 120
-                with_details:
-                  type: integer
-                  example: 130
-                unnotified:
-                  type: integer
-                  example: 30
-                without_details:
-                  type: integer
-                  example: 20
-            recent_fetches:
-              type: array
-              items:
-                type: object
-                properties:
-                  id:
-                    type: integer
-                  timestamp:
-                    type: string
-                    format: date-time
-                  endpoint:
-                    type: string
-                  status_code:
-                    type: integer
-                  response_size:
-                    type: integer
-                  error:
-                    type: string
-      500:
-        description: Error getting statistics
-        schema:
-          type: object
-          properties:
-            status:
-              type: string
-              example: error
-            message:
-              type: string
-    """
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        # Get total, notified, and with details counts
-        cursor.execute("SELECT COUNT(*) as total FROM job_offers")
-        total = dict(cursor.fetchone())['total']
-        
-        cursor.execute("SELECT COUNT(*) as notified FROM job_offers WHERE notified = 1")
-        notified = dict(cursor.fetchone())['notified']
-        
-        cursor.execute("SELECT COUNT(*) as with_details FROM job_offers WHERE details_fetched = 1")
-        with_details = dict(cursor.fetchone())['with_details']
-        
-        # Get recent fetch history
-        cursor.execute("SELECT * FROM fetch_history ORDER BY timestamp DESC LIMIT 10")
-        recent_fetches = [dict(row) for row in cursor.fetchall()]
-        
-        conn.close()
-        
-        return jsonify({
-            "offers": {
-                "total": total,
-                "notified": notified,
-                "with_details": with_details,
-                "unnotified": total - notified,
-                "without_details": total - with_details
-            },
-            "recent_fetches": recent_fetches
-        })
-    except Exception as e:
-        logger.exception("Error in stats endpoint")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
+# --- Application Entry Point ---
 if __name__ == '__main__':
-    # Initialize the database
+    # Ensure the database directory exists (handled within get_db_conn now)
+    # Initialize the database schema (fetch_history table)
     init_db()
-    
-    # Log startup
-    logger.info("Starting Manfred Job Fetcher")
-    
-    # Run the Flask app
-    app.run(host='0.0.0.0', port=5000)
+
+    # Log startup information
+    logger.info("-----------------------------------------")
+    logger.info("Starting Manfred Job Fetcher (Simplified)")
+    logger.info(f"Database Path: {CONFIG['DB_PATH']}")
+    logger.info(f"External API Endpoint: {CONFIG['EXTERNAL_ENDPOINT_URL']}")
+    logger.info("Endpoints available: /raw-offers, /store-offers, /health, /api/docs")
+    logger.info("-----------------------------------------")
+
+    # Run Flask App
+    # Use waitress or gunicorn in production instead of app.run()
+    app.run(host='0.0.0.0', port=5000, debug=False)
+
+# --- END OF FILE app.py ---

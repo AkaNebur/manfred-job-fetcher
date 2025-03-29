@@ -1,3 +1,5 @@
+# --- START OF FILE swagger.py ---
+
 from flasgger import Swagger
 
 def setup_swagger(app):
@@ -14,16 +16,17 @@ def setup_swagger(app):
         ],
         "static_url_path": "/flasgger_static",
         "swagger_ui": True,
-        "specs_route": "/api/docs"
+        "specs_route": "/api/docs" # Keep the UI route
     }
 
+    # Simplified template for remaining endpoints
     swagger_template = {
         "info": {
-            "title": "Manfred Job Fetcher API",
-            "description": "API for fetching and managing job offers from GetManfred's public API",
+            "title": "Manfred Job Fetcher API (Simplified)",
+            "description": "API for fetching raw data from GetManfred and checking system health.",
             "version": "1.0.0",
             "contact": {
-                "email": "your.email@example.com"
+                "email": "your.email@example.com" # Replace if needed
             },
         },
         "schemes": [
@@ -31,15 +34,24 @@ def setup_swagger(app):
             "https"
         ],
         "tags": [
+             {
+                "name": "Raw Data",
+                "description": "Direct fetching from external source"
+            },
             {
-                "name": "Job Offers",
-                "description": "Operations related to job offers"
+                "name": "Data Storage",
+                "description": "Operations for persisting job offers data"
             },
             {
                 "name": "System",
-                "description": "System health and statistics"
+                "description": "System health check"
             }
         ],
+        "definitions": {
+             # No complex definitions needed for the remaining endpoints
+        },
     }
 
     return Swagger(app, config=swagger_config, template=swagger_template)
+
+# --- END OF FILE swagger.py ---

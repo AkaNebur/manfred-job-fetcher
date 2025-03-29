@@ -15,7 +15,6 @@ RUN mkdir -p /app/data
 
 # Copy application code
 COPY app.py .
-COPY init_db.py .
 COPY swagger.py .
 
 # Expose the port Flask will run on
