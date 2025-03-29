@@ -1,18 +1,24 @@
 # --- START OF FILE discord_notifier.py ---
 import logging
-import json # Added for pretty-printing payload
+import json
 from datetime import datetime
 import time
+import httpx
 
 # Assuming these are correctly set up in your project structure
 from config import CONFIG
 from database import get_job_skills_from_db, get_job_languages_from_db
-from manfred_api import http_session
+from manfred_api import get_retry_for_request  # Import the retry helper
 
 logger = logging.getLogger(__name__)
 
+# Create a reusable httpx client for Discord webhook interactions
+discord_client = httpx.Client(
+    timeout=15.0,
+    follow_redirects=True
+)
+
 # --- Helper Functions (_format_skills_for_field, _format_language_for_field) ---
-# (These functions remain unchanged from your original code)
 def _format_skills_for_field(skill_list):
     """Formats a list of skill dictionaries into a string for an embed field."""
     if not skill_list:
@@ -45,7 +51,6 @@ def _format_language_for_field(language_list):
     return formatted_value[:1020] + "..." if len(formatted_value) > 1020 else formatted_value
 
 # --- Embed Builder (_build_discord_embed) ---
-# (This function remains unchanged from your original code)
 def _build_discord_embed(offer_dict):
     """
     Builds the Discord embed message and extracts the job URL.
@@ -143,7 +148,6 @@ def _build_discord_embed(offer_dict):
     embed = {
         "title": f"{position} @ {company_name}", # Title is now plain text
         "description": "", # Optional: Add a brief summary here if desired
-        # "url": job_url, # <<< REMOVED: Link is now in a button component
         "color": 5814783, # Manfred purple-ish color (decimal)
         "timestamp": datetime.now().isoformat(),
         "footer": {"text": "Via Manfred Job Fetcher"},
@@ -155,6 +159,21 @@ def _build_discord_embed(offer_dict):
 
     # Return the embed dictionary and the job_url for the button
     return embed, job_url
+
+# Apply retry logic to the Discord notification function
+@get_retry_for_request
+def _send_discord_notification_internal(webhook_url, webhook_data, offer_id_str):
+    """Internal function that sends the webhook with retry logic applied."""
+    response = discord_client.post(
+        webhook_url,
+        json=webhook_data, # Send the complete payload (embeds + components)
+        headers={"Content-Type": "application/json"},
+        timeout=15 # Slightly longer timeout for network variance
+    )
+    # Raise an exception for bad status codes (4xx or 5xx)
+    response.raise_for_status()
+    logger.info(f"Sent Discord notification successfully for offer ID: {offer_id_str}")
+    return response
 
 # --- Notification Sender (Single) ---
 def send_discord_notification(offer_dict):
@@ -200,10 +219,6 @@ def send_discord_notification(offer_dict):
                         "style": 5,         # Style: Link button (opens URL)
                         "label": "View Job Offer", # Text displayed on the button
                         "url": job_url    # The URL the button points to
-                        # "emoji": {          # Optional: Add an emoji to the button
-                        #     "name": "📄"     # Example: document emoji (Unicode)
-                        #  }
-                        # No "custom_id" needed for link buttons (style 5)
                     }
                 ]
             }
@@ -219,46 +234,35 @@ def send_discord_notification(offer_dict):
         logger.debug(f"Final webhook payload for Offer ID {offer_id_str}:\n{payload_json}")
     except Exception as json_err:
         logger.error(f"Failed to serialize webhook_data to JSON for Offer ID {offer_id_str}: {json_err}")
-        # Optionally return False here if serialization fails, though it's unlikely
-        # return False
 
-    # --- End Enhanced Logging ---
-
-
-    # Send the request to the Discord Webhook
+    # Send the request to the Discord Webhook with retry logic
     try:
-        response = http_session.post(
-            webhook_url,
-            json=webhook_data, # Send the complete payload (embeds + components)
-            headers={"Content-Type": "application/json"},
-            timeout=15 # Slightly longer timeout for network variance
-        )
-        # Raise an exception for bad status codes (4xx or 5xx)
-        response.raise_for_status()
-        logger.info(f"Sent Discord notification successfully for offer ID: {offer_id_str}")
-        # Consider a small delay if sending many notifications rapidly, even individually
-        # time.sleep(0.2)
+        _send_discord_notification_internal(webhook_url, webhook_data, offer_id_str)
         return True
-    except Exception as e:
-        # Log detailed error including potential HTTP status code from response
-        status_code = getattr(e, 'response', None) and getattr(e.response, 'status_code', None)
+    except httpx.TimeoutException as e:
+        error = f"Timeout sending Discord webhook for offer ID {offer_id_str}: {e}"
+        logger.error(error)
+        return False
+    except httpx.HTTPStatusError as e:
+        # Log detailed error including HTTP status code from response
+        status_code = e.response.status_code if e.response else "Unknown"
         error_message = str(e)
+        
         # Try to get Discord's error message if available
         discord_error_details = ""
-        if getattr(e, 'response', None) is not None:
+        if e.response is not None:
             try:
                 error_json = e.response.json()
                 discord_error_details = f" | Discord Response: {json.dumps(error_json)}"
             except json.JSONDecodeError:
                 discord_error_details = f" | Discord Response (non-JSON): {e.response.text[:200]}..." # Log first 200 chars
 
-        if status_code:
-             error_message = f"HTTP {status_code} - {error_message}{discord_error_details}"
-        else:
-             error_message = f"{error_message}{discord_error_details}"
-
-        # Log with exc_info=True during debugging if you need the full traceback
-        logger.error(f"Failed to send Discord webhook for offer ID {offer_id_str}: {error_message}", exc_info=False)
+        error_message = f"HTTP {status_code} - {error_message}{discord_error_details}"
+        logger.error(f"Failed to send Discord webhook for offer ID {offer_id_str}: {error_message}")
+        return False
+    except Exception as e:
+        # Generic error handling
+        logger.error(f"Failed to send Discord webhook for offer ID {offer_id_str}: {str(e)}", exc_info=True)
         return False
 
 # --- Notification Sender (Batch) ---
@@ -303,7 +307,6 @@ def send_batch_notifications(offer_dicts, batch_size=5, delay_seconds=1.5):
         else:
             # Failure already logged within send_discord_notification
             logger.warning(f"Failed to send notification for offer ID {offer_id_str} in batch (attempt {i+1}/{total_in_batch}). See previous error for details.")
-            # Optional: Implement different behavior on failure, e.g., break, longer delay.
 
         # Apply delay *after* sending, but not after the very last one in the batch
         if i < total_in_batch - 1 and delay_seconds > 0:
@@ -313,4 +316,11 @@ def send_batch_notifications(offer_dicts, batch_size=5, delay_seconds=1.5):
     logger.info(f"Finished sending batch. Successfully sent {sent_count}/{total_in_batch} notifications.")
     return sent_count
 
+def close_discord_client():
+    """Closes the Discord HTTP client to free resources. Should be called during application shutdown."""
+    try:
+        discord_client.close()
+        logger.info("Discord HTTP client closed successfully")
+    except Exception as e:
+        logger.error(f"Error closing Discord HTTP client: {e}")
 # --- END OF FILE discord_notifier.py ---

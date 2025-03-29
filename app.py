@@ -31,7 +31,7 @@ logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# Setup FastAPI lifespan for startup/shutdown events
+# lifespan function
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup operations
@@ -72,6 +72,19 @@ async def lifespan(app: FastAPI):
             sched.shutdown()
     except (ImportError, AttributeError) as e:
         logger.warning(f"Could not properly shut down scheduler: {e}")
+    
+    # Close HTTP clients
+    try:
+        # Import the functions to close HTTP clients
+        from manfred_api import close_http_client
+        from discord_notifier import close_discord_client
+        
+        # Close the clients
+        logger.info("Closing HTTP clients")
+        close_http_client()
+        close_discord_client()
+    except (ImportError, Exception) as e:
+        logger.warning(f"Could not properly close HTTP clients: {e}")
 
 # Create FastAPI application
 app = FastAPI(

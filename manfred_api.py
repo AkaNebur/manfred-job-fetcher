@@ -1,28 +1,19 @@
 # --- START OF FILE manfred_api.py ---
-import requests
 import logging
 import json
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import httpx
+import time
 
-from config import CONFIG # Shared configuration
-from database import log_fetch_attempt # Import DB function for logging
+from config import CONFIG  # Shared configuration
+from database import log_fetch_attempt  # Import DB function for logging
 
 logger = logging.getLogger(__name__)
 
-# --- Requests Session with Retries ---
-retry_strategy = Retry(
-    total=CONFIG['MAX_RETRIES'],
-    backoff_factor=CONFIG['RETRY_BACKOFF'],
-    status_forcelist=[429, 500, 502, 503, 504], # Retry on these statuses
-    allowed_methods=["GET", "POST"] # Retry GET and POST requests
+# Create a persistent httpx Client
+http_client = httpx.Client(
+    timeout=15.0,
+    follow_redirects=True
 )
-adapter = HTTPAdapter(max_retries=retry_strategy)
-http_session = requests.Session()
-http_session.mount("http://", adapter)
-http_session.mount("https://", adapter)
-# Standard headers can be set here if needed
-# http_session.headers.update({'User-Agent': 'ManfredJobFetcher/1.0'})
 
 def make_api_request(url, method='GET', json_payload=None, timeout=15):
     """Makes an HTTP request with retries and logs the attempt using the database logger."""
@@ -30,45 +21,94 @@ def make_api_request(url, method='GET', json_payload=None, timeout=15):
     error = None
     status_code = None
     response_size = None
-    try:
-        logger.debug(f"Making {method} request to {url}")
-        if method.upper() == 'POST':
-            response = http_session.post(url, json=json_payload, headers={"Content-Type": "application/json"}, timeout=timeout)
-        else: # Default to GET
-            response = http_session.get(url, timeout=timeout)
+    
+    # Get retry settings from config
+    max_retries = CONFIG['MAX_RETRIES']
+    backoff_factor = CONFIG['RETRY_BACKOFF']
+    
+    # Initialize retry counter
+    retries = 0
+    
+    while retries <= max_retries:
+        try:
+            logger.debug(f"Making {method} request to {url} (attempt {retries+1}/{max_retries+1})")
+            
+            if method.upper() == 'POST':
+                response = http_client.post(
+                    url, 
+                    json=json_payload, 
+                    headers={"Content-Type": "application/json"}, 
+                    timeout=timeout
+                )
+            else:  # Default to GET
+                response = http_client.get(url, timeout=timeout)
 
-        status_code = response.status_code
-        response_size = len(response.content)
-        response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
-        logger.debug(f"Request successful: {method} {url} -> {status_code}")
-        return response
-    except requests.exceptions.Timeout as e:
-        error = f"Timeout during request to {url}: {e}"
-        logger.error(error)
-    except requests.exceptions.HTTPError as e:
-        error = f"HTTP error during request to {url}: {e}"
-        if e.response is not None:
-            status_code = e.response.status_code
-            response_size = len(e.response.content) if e.response.content else 0
-            # Log more details for HTTP errors
-            logger.error(f"{error} - Status: {status_code}, Response: {e.response.text[:200]}")
-        else:
-             logger.error(error)
-    except requests.exceptions.RequestException as e:
-        error = f"Request exception for {url}: {e}"
-        # Attempt to get status/size if response exists within the exception object
-        if hasattr(e, 'response') and e.response is not None:
-            status_code = e.response.status_code
-            response_size = len(e.response.content) if e.response.content else 0
-        logger.error(error, exc_info=True) # Log traceback for generic request errors
-    except Exception as e:
-        error = f"Unexpected error during request to {url}: {e}"
-        logger.exception(f"Unexpected error during request to {url}") # Log full traceback for unexpected errors
-    finally:
-        # Always log the attempt to the database
-        log_fetch_attempt(url, status_code, response_size, error)
-
-    return None # Return None if any error occurred
+            status_code = response.status_code
+            response_size = len(response.content)
+            
+            # Success - no need to retry
+            if 200 <= status_code < 300:
+                logger.debug(f"Request successful: {method} {url} -> {status_code}")
+                return response
+                
+            # Server errors or specific status codes that warrant a retry
+            if status_code in [429, 500, 502, 503, 504] and retries < max_retries:
+                retries += 1
+                sleep_time = backoff_factor * (2 ** retries)
+                logger.warning(f"Request failed with status {status_code}. Retrying in {sleep_time:.2f}s ({retries}/{max_retries})")
+                time.sleep(sleep_time)
+                continue
+                
+            # Client errors or other status codes that don't warrant a retry
+            response.raise_for_status()  # Will raise an HTTPStatusError for status codes 4xx/5xx
+            
+        except httpx.TimeoutException as e:
+            error = f"Timeout during request to {url}: {e}"
+            logger.error(error)
+            
+            if retries < max_retries:
+                retries += 1
+                sleep_time = backoff_factor * (2 ** retries)
+                logger.warning(f"Request timed out. Retrying in {sleep_time:.2f}s ({retries}/{max_retries})")
+                time.sleep(sleep_time)
+                continue
+            break
+            
+        except httpx.HTTPStatusError as e:
+            # Already handled status codes that warrant retries above
+            error = f"HTTP error during request to {url}: {e}"
+            if e.response is not None:
+                status_code = e.response.status_code
+                response_size = len(e.response.content) if e.response.content else 0
+                logger.error(f"{error} - Status: {status_code}, Response: {e.response.text[:200]}")
+            else:
+                logger.error(error)
+            break
+            
+        except httpx.RequestError as e:
+            error = f"Request exception for {url}: {e}"
+            if hasattr(e, 'response') and e.response is not None:
+                status_code = e.response.status_code
+                response_size = len(e.response.content) if e.response.content else 0
+            
+            if retries < max_retries:
+                retries += 1
+                sleep_time = backoff_factor * (2 ** retries)
+                logger.warning(f"Request failed with error. Retrying in {sleep_time:.2f}s ({retries}/{max_retries})")
+                time.sleep(sleep_time)
+                continue
+                
+            logger.error(error, exc_info=True)
+            break
+            
+        except Exception as e:
+            error = f"Unexpected error during request to {url}: {e}"
+            logger.exception(f"Unexpected error during request to {url}")
+            break
+    
+    # Log the attempt regardless of success or failure
+    log_fetch_attempt(url, status_code, response_size, error)
+    return None  # Return None if all retries failed
 
 def fetch_raw_offers_list():
     """Fetches the list of raw job offers from the configured endpoint."""
@@ -77,11 +117,11 @@ def fetch_raw_offers_list():
     response = make_api_request(endpoint_url)
     if response:
         try:
-            return response.json() # Return parsed JSON
+            return response.json()  # Return parsed JSON
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode JSON from {endpoint_url}: {e}")
-            return None # Indicate failure to parse
-    return None # Indicate failure to fetch
+            return None  # Indicate failure to parse
+    return None  # Indicate failure to fetch
 
 def fetch_job_details_data(offer_id, slug):
     """Fetches detailed information for a specific job offer."""
@@ -119,12 +159,50 @@ def fetch_job_details_data(offer_id, slug):
             return offer_details
         else:
             logger.warning(f"Could not find 'pageProps.offer' in the response for job details, offer ID {offer_id}. Response keys: {list(data.keys())}")
-            return None # Structure mismatch
+            return None  # Structure mismatch
     except json.JSONDecodeError as e:
         logger.error(f"Error parsing JSON job details for offer ID {offer_id}: {e}")
         return None
     except Exception as e:
         logger.error(f"Unexpected error processing job details response for offer ID {offer_id}: {e}", exc_info=True)
         return None
+
+def close_http_client():
+    """Closes the HTTP client to free resources. Should be called during application shutdown."""
+    try:
+        http_client.close()
+        logger.info("HTTP client closed successfully")
+    except Exception as e:
+        logger.error(f"Error closing HTTP client: {e}")
+
+# Function to help with retries for other modules
+def get_retry_for_request(func):
+    """
+    A helper function that can be used to add retry logic to any request function.
+    Usage:
+    
+    @get_retry_for_request
+    def my_request_function(url):
+        return requests.get(url)
+    """
+    def wrapper(*args, **kwargs):
+        max_retries = CONFIG['MAX_RETRIES']
+        backoff_factor = CONFIG['RETRY_BACKOFF']
+        
+        for attempt in range(max_retries + 1):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                if attempt >= max_retries:
+                    raise
+                
+                sleep_time = backoff_factor * (2 ** attempt)
+                logger.warning(f"Request failed with {e}. Retrying in {sleep_time:.2f}s. "
+                              f"Attempt {attempt+1}/{max_retries+1}")
+                time.sleep(sleep_time)
+        
+        return None  # This should never be reached
+    
+    return wrapper
 
 # --- END OF FILE manfred_api.py ---
