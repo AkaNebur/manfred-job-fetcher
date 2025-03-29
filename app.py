@@ -6,14 +6,14 @@ from flask import Flask
 
 # Import configurations and initializers
 from config import CONFIG # Base configuration
-from database import init_db, check_db_connection # DB initializer and check
+from database import init_db, check_db_connection, Session # Updated import for SQLAlchemy
 from swagger import setup_swagger # Swagger setup
 from routes import api_bp # Import the Blueprint with API routes
 from scheduler import initialize_scheduler # Import scheduler initializer
 
 # --- Logging Setup ---
 # Configure logging early
-log_level_str = os.getenv('LOG_LEVEL', 'DEBUG').upper()
+log_level_str = os.getenv('LOG_LEVEL', 'INFO').upper()
 log_level = getattr(logging, log_level_str, logging.INFO)
 
 logging.basicConfig(
@@ -25,6 +25,7 @@ logging.basicConfig(
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.WARNING) # Less verbose server logs
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING) # Reduce SQLAlchemy logging
 
 logger = logging.getLogger(__name__) # Logger for this module
 
@@ -73,6 +74,11 @@ def create_app():
         logger.error(f"Failed to initialize scheduler: {e}", exc_info=True)
         # Continue running even if scheduler initialization fails
 
+    # Add SQLAlchemy session cleanup on request end
+    @app.teardown_appcontext
+    def shutdown_session(exception=None):
+        Session.remove()
+
     logger.info("Application components initialized.")
     return app
 
@@ -82,7 +88,7 @@ if __name__ == '__main__':
 
     # Log key configuration details on startup
     logger.info("-----------------------------------------")
-    logger.info("Manfred Job Fetcher Starting Up (Refactored)")
+    logger.info("Manfred Job Fetcher Starting Up (SQLAlchemy Version)")
     logger.info(f"Log Level: {log_level_str}")
     logger.info(f"DB Path: {CONFIG['DB_PATH']}")
     logger.info(f"External API: {CONFIG['EXTERNAL_ENDPOINT_URL']}")
@@ -101,9 +107,5 @@ if __name__ == '__main__':
     debug_mode = os.getenv('FLASK_DEBUG', '0') == '1' # Enable Flask debug mode if FLASK_DEBUG=1
     logger.info(f"Running Flask development server on port {port} (Debug Mode: {debug_mode})")
     app.run(host='0.0.0.0', port=port, debug=debug_mode)
-
-    # Example for production using Waitress (install waitress first: pip install waitress)
-    # from waitress import serve
-    # serve(app, host='0.0.0.0', port=port)
 
 # --- END OF FILE app.py ---

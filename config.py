@@ -1,4 +1,4 @@
-# --- START OF FILE config.py ---
+# --- UPDATED FILE config.py ---
 import os
 
 def load_config():
@@ -16,8 +16,17 @@ def load_config():
         'DISCORD_WEBHOOK_URL': os.getenv('DISCORD_WEBHOOK_URL', ''),
         'BUILD_ID_HASH': os.getenv('BUILD_ID_HASH', 'BIDHCAYe6i8X-XyfefcMo'),
         'DETAIL_ENDPOINT_PATTERN': detail_pattern,
-        'RESET_DB': os.getenv('RESET_DB', 'false').lower() in ('true', '1', 't'), # Added for completeness from readme
-        'FETCH_INTERVAL': int(os.getenv('FETCH_INTERVAL', '3600')), # Default to 1 hour (3600 seconds)
+        'RESET_DB': os.getenv('RESET_DB', 'false').lower() in ('true', '1', 't'),
+        'FETCH_INTERVAL': int(os.getenv('FETCH_INTERVAL', '3600')),  # Default to 1 hour (3600 seconds)
+        
+        # SQLAlchemy specific settings
+        'SQLALCHEMY_ECHO': os.getenv('SQLALCHEMY_ECHO', 'false').lower() in ('true', '1', 't'),
+        'SQLALCHEMY_TRACK_MODIFICATIONS': False,
+        'SQLALCHEMY_ENGINE_OPTIONS': {
+            'pool_pre_ping': True,  # Check connection before using from pool
+            'pool_recycle': 3600,   # Recycle connections after 1 hour
+        },
+        
         # Flask specific configs might stay in app.py or move here if needed globally
         # 'FLASK_ENV': os.getenv('FLASK_ENV', 'production'),
         # 'FLASK_DEBUG': os.getenv('FLASK_DEBUG', '0'),
@@ -25,4 +34,4 @@ def load_config():
 
 CONFIG = load_config()
 
-# --- END OF FILE config.py ---
+# --- END OF UPDATED FILE config.py ---
