@@ -342,10 +342,42 @@ def _build_discord_embed(offer):
 
     skills_data = get_job_skills(offer_id)
     skills_fields = []
+    
+    # Format must-have skills with level and line breaks
     if skills_data.get('must'):
-        skills_fields.append({"name": "🔒 Must Have", "value": ", ".join([s['skill'] for s in skills_data['must']]), "inline": False})
+        must_skills = []
+        for skill in skills_data['must']:
+            level_stars = "★" * skill.get('level', 0) if skill.get('level') else ""
+            must_skills.append(f"• {skill['skill']} {level_stars}")
+        skills_fields.append({
+            "name": "🔒 Must Have", 
+            "value": "\n".join(must_skills), 
+            "inline": False
+        })
+    
+    # Format nice-to-have skills with level and line breaks
     if skills_data.get('nice'):
-         skills_fields.append({"name": "✨ Nice to Have", "value": ", ".join([s['skill'] for s in skills_data['nice']]), "inline": False})
+        nice_skills = []
+        for skill in skills_data['nice']:
+            level_stars = "★" * skill.get('level', 0) if skill.get('level') else ""
+            nice_skills.append(f"• {skill['skill']} {level_stars}")
+        skills_fields.append({
+            "name": "✨ Nice to Have", 
+            "value": "\n".join(nice_skills), 
+            "inline": False
+        })
+
+    # Add extra skills if they exist
+    if skills_data.get('extra'):
+        extra_skills = []
+        for skill in skills_data['extra']:
+            level_stars = "★" * skill.get('level', 0) if skill.get('level') else ""
+            extra_skills.append(f"• {skill['skill']} {level_stars}")
+        skills_fields.append({
+            "name": "➕ Extra Skills", 
+            "value": "\n".join(extra_skills), 
+            "inline": False
+        })
 
     embed = {
         "title": f"{position} at {company_name}",
