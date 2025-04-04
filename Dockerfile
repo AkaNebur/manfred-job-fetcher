@@ -3,7 +3,7 @@ FROM python:3.9-slim
 WORKDIR /app
 
 # Install curl for healthcheck and dependencies
-RUN apt-get update && apt-get install -y curl && \
+RUN apt-get update && apt-get install -y curl dos2unix && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies
@@ -26,7 +26,8 @@ COPY discord_notifier.py .
 
 # Create startup script to reset DB
 COPY entrypoint.sh .
-RUN chmod +x entrypoint.sh
+# Convert to Unix line endings and make executable
+RUN dos2unix entrypoint.sh && chmod +x entrypoint.sh
 
 # Expose the port FastAPI will run on
 EXPOSE 5000
@@ -36,4 +37,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:5000/health || exit 1
 
 # Run the entrypoint script instead of directly running the app
-CMD ["./entrypoint.sh"]
+CMD ["/bin/bash", "/app/entrypoint.sh"]

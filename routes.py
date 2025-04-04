@@ -173,6 +173,49 @@ async def send_pending_notifications_route(limit: int = Query(5, description="Ma
         )
 
 
+@router.get("/update-build-hash", 
+    summary="Update BUILD_ID_HASH",
+    description="Attempts to fetch and update the BUILD_ID_HASH from the Manfred website.",
+    response_description="Result of the hash update operation.",
+    tags=["System"])
+async def update_build_hash_route():
+    logger.info("Route: GET /update-build-hash")
+    try:
+        # Import the function from manfred_api
+        from manfred_api import fetch_and_update_build_id_hash
+        
+        # Store the original hash for comparison
+        original_hash = services.CONFIG['BUILD_ID_HASH']
+        
+        # Attempt to update the hash
+        success = fetch_and_update_build_id_hash()
+        
+        if success:
+            if original_hash != services.CONFIG['BUILD_ID_HASH']:
+                return {
+                    "status": "success",
+                    "message": f"Successfully updated BUILD_ID_HASH from {original_hash} to {services.CONFIG['BUILD_ID_HASH']}",
+                    "current_hash": services.CONFIG['BUILD_ID_HASH']
+                }
+            else:
+                return {
+                    "status": "success",
+                    "message": f"BUILD_ID_HASH is already up-to-date: {services.CONFIG['BUILD_ID_HASH']}",
+                    "current_hash": services.CONFIG['BUILD_ID_HASH']
+                }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update BUILD_ID_HASH"
+            )
+    except Exception as e:
+        logger.exception("Route: Unexpected error in /update-build-hash")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An internal server error occurred: {str(e)}"
+        )
+
+
 @router.get("/health", 
     response_model=HealthCheckResponse,
     summary="System health check",

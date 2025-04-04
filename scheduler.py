@@ -1,4 +1,4 @@
-# --- START OF FILE scheduler.py ---
+# --- scheduler.py ---
 import logging
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -64,32 +64,42 @@ def scheduled_fetch_job():
         services = get_services()
         
         # Call the service function to fetch and process offers
+        # This now handles everything in the correct order:
+        # 1. Fetch offers
+        # 2. Store/update them in the database
+        # 3. Process skills for new offers
+        # 4. Send notifications for offers with skills
         result = services.fetch_and_store_offers_service()
         
         # Log the result
         status = result.get('status', 'unknown')
         new_offers = result.get('new_offers', 0)
         updated_offers = result.get('updated_offers', 0)
+        skills_processed = result.get('skills_processed', 0)
+        webhook_sent = result.get('webhook_sent', 0)
         
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
         
         logger.info(
             f"Scheduler: Completed scheduled job fetch in {duration:.2f} seconds. "
-            f"Status: {status}, New: {new_offers}, Updated: {updated_offers}"
+            f"Status: {status}, New: {new_offers}, Updated: {updated_offers}, "
+            f"Skills processed: {skills_processed}, Notifications sent: {webhook_sent}"
         )
         
-        # Optionally process skills for any new offers
-        if new_offers > 0:
-            logger.info(f"Scheduler: Processing skills for {new_offers} new offers")
-            skills_result = services.process_pending_details_service(limit=new_offers)
-            logger.info(f"Scheduler: Processed skills for {skills_result} offers")
-            
-            # Send notifications if any new offers
-            if CONFIG.get('DISCORD_WEBHOOK_URL'):
-                logger.info(f"Scheduler: Sending notifications for new offers")
-                notification_result = services.send_pending_notifications_service(limit=new_offers)
-                logger.info(f"Scheduler: Sent {notification_result[0]} notifications, {notification_result[1]} remaining")
+        # Check for any pending notifications that might have failed previously
+        if CONFIG.get('DISCORD_WEBHOOK_URL'):
+            logger.info(f"Scheduler: Checking for any pending notifications...")
+            notification_result = services.send_pending_notifications_service(limit=10)
+            if notification_result[0] > 0:
+                logger.info(f"Scheduler: Sent {notification_result[0]} pending notifications, {notification_result[1]} remaining")
+            else:
+                logger.info(f"Scheduler: No pending notifications to send")
+                
+        # Check for any offers still missing skills data
+        pending_skills_count = services.process_pending_details_service(limit=10)
+        if pending_skills_count > 0:
+            logger.info(f"Scheduler: Processed skills for {pending_skills_count} offers that were pending")
     
     except Exception as e:
         logger.error(f"Scheduler: Error during scheduled job fetch: {e}", exc_info=True)

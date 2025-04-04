@@ -9,6 +9,15 @@ from database import get_job_skills_from_db, get_job_languages_from_db
 
 logger = logging.getLogger(__name__)
 
+# Global client for Discord webhooks
+discord_client = None
+
+def close_discord_client():
+    """Close any HTTP clients to free resources."""
+    # discord-webhook library doesn't have a specific close method
+    # but we include this for symmetry with other close functions
+    logger.info("Discord client resources released")
+
 # --- Helper Functions ---
 def _format_skills_for_field(skill_list):
     """Formats a list of skill dictionaries into a string for an embed field."""
@@ -42,8 +51,6 @@ def _format_language_for_field(language_list):
     return formatted_value[:1020] + "..." if len(formatted_value) > 1020 else formatted_value
 
 # --- Embed Builder ---
-# Modified section of _build_discord_embed function in discord_notifier.py
-
 def _build_discord_embed(offer_dict):
     """
     Builds a Discord embed for a job offer using discord-webhook library.
@@ -53,6 +60,17 @@ def _build_discord_embed(offer_dict):
     if not offer_id:
         logger.error("Cannot build embed: Offer dictionary missing 'id'.")
         return None
+
+    # Log that we're building an embed for debugging
+    logger.debug(f"Building Discord embed for offer ID: {offer_id}")
+
+    # Get skills and language data from DB
+    skills_data = get_job_skills_from_db(offer_id)
+    languages_data = get_job_languages_from_db(offer_id)
+    
+    # Log the skills and languages retrieved
+    logger.debug(f"Skills data for offer ID {offer_id}: {skills_data}")
+    logger.debug(f"Languages data for offer ID {offer_id}: {languages_data}")
 
     position = offer_dict.get('position', 'Unknown Position')
     company_data = offer_dict.get('company', {})
@@ -111,10 +129,6 @@ def _build_discord_embed(offer_dict):
             value="\n".join(info_lines),
             inline=False
         )
-
-    # Get skills and language data from DB
-    skills_data = get_job_skills_from_db(offer_id)
-    languages_data = get_job_languages_from_db(offer_id)
 
     # Add language requirements field
     languages_text = _format_language_for_field(languages_data)
@@ -176,16 +190,39 @@ def send_discord_notification(offer_dict):
     job_url = f"https://www.getmanfred.com/es/job-offers/{offer_id}/{slug}"
 
     try:
+        # Verify skills have been retrieved for this offer
+        from database import get_offer_by_id
+        
+        db_offer = get_offer_by_id(offer_id)
+        if not db_offer:
+            logger.error(f"Failed to find offer ID {offer_id_str} in database")
+            return False
+            
+        if not db_offer.get('skills_retrieved', False):
+            logger.warning(f"Skipping Discord notification for offer ID {offer_id_str} - skills not yet retrieved")
+            return False
+        
+        # Check if there are any skills in the database
+        from database import get_job_skills_from_db
+        skills_data = get_job_skills_from_db(offer_id)
+        
+        has_any_skills = False
+        for category in ['must', 'nice', 'extra']:
+            if skills_data.get(category) and len(skills_data.get(category)) > 0:
+                has_any_skills = True
+                break
+                
+        if not has_any_skills:
+            logger.info(f"Offer ID {offer_id_str} is marked as skills_retrieved=True but no skills found in database")
+        
         # Build embed (URL is part of the embed title and a dedicated field)
         embed = _build_discord_embed(offer_dict)
         if not embed:
             logger.error(f"Failed to build embed for offer ID {offer_id_str}")
             return False
 
-        # --- MODIFIED CONTENT ---
         # Create webhook content including the job title, company, and link
         content = f"📢 New Job Offer Found!"
-        # --- END MODIFIED CONTENT ---
 
         webhook = DiscordWebhook(
             url=webhook_url,

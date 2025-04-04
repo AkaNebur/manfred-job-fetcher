@@ -50,6 +50,22 @@ async def lifespan(app: FastAPI):
         # Don't exit, let app start in degraded mode
         # sys.exit("Database initialization failed. Exiting.")
     
+    # Try to fetch the latest BUILD_ID_HASH if current one is empty or startup fetch is enabled
+    try:
+        from manfred_api import fetch_and_update_build_id_hash
+        
+        if not CONFIG.get('BUILD_ID_HASH'):
+            logger.info("No BUILD_ID_HASH found, attempting to fetch from website...")
+            fetch_result = fetch_and_update_build_id_hash()
+            if fetch_result:
+                logger.info(f"Successfully fetched BUILD_ID_HASH: {CONFIG.get('BUILD_ID_HASH')}")
+            else:
+                logger.warning("Failed to fetch BUILD_ID_HASH on startup, will retry when needed")
+        else:
+            logger.info(f"Using existing BUILD_ID_HASH: {CONFIG.get('BUILD_ID_HASH')}")
+    except Exception as e:
+        logger.warning(f"Error during startup BUILD_ID_HASH fetch: {e}")
+    
     # Initialize scheduler (adapted for FastAPI)
     try:
         # Import scheduler at the top level to avoid circular imports

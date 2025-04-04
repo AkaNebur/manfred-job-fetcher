@@ -49,10 +49,45 @@ def fetch_and_store_offers_service():
         # or rely on the function querying the DB for offers with skills_retrieved = 0
         skills_processed_count = process_pending_details_service(limit=len(new_offer_dicts)) # Process up to the number of new offers
         logger.info(f"Service: Processed skills for {skills_processed_count} offers.")
+        
+        # If not all skills were processed, log a warning
+        if skills_processed_count < len(new_offer_dicts):
+            logger.warning(f"Service: Only processed skills for {skills_processed_count}/{len(new_offer_dicts)} new offers.")
     else:
         logger.info("Service: No new offers found, skipping skills processing step.")
 
-    # 4. Send notifications for NEW offers
+    # 4. Reload new_offer_dicts with the latest data including skills
+    if new_offer_dicts:
+        enriched_new_offers = []
+        for offer in new_offer_dicts:
+            offer_id = offer.get('id')
+            if offer_id:
+                # Get the full offer details from the database
+                db_offer = database.get_offer_by_id(offer_id)
+                if db_offer:
+                    # Ensure we only send notifications for offers with skills
+                    if db_offer.get('skills_retrieved', False):
+                        # Create a new offer dict with the same structure as original but with DB data
+                        enriched_offer = {
+                            'id': db_offer['offer_id'],
+                            'position': db_offer['position'],
+                            'company': {
+                                'name': db_offer['company_name'],
+                                'logoDark': {'url': db_offer['company_logo_dark_url']} if db_offer['company_logo_dark_url'] else None
+                            },
+                            'remotePercentage': db_offer['remote_percentage'],
+                            'salaryFrom': db_offer['salary_from'],
+                            'salaryTo': db_offer['salary_to'],
+                            'locations': db_offer['locations'].split(', ') if db_offer['locations'] else [],
+                            'slug': db_offer['slug'] if db_offer['slug'] else f"job-{db_offer['offer_id']}"
+                        }
+                        enriched_new_offers.append(enriched_offer)
+                    else:
+                        logger.warning(f"Service: Skipping notification for offer ID {offer_id} because skills have not been retrieved yet.")
+        # Replace the original list with the enriched one
+        new_offer_dicts = enriched_new_offers
+
+    # 5. Send notifications for NEW offers with skills
     webhook_sent_count = 0
     if new_offer_dicts and CONFIG['DISCORD_WEBHOOK_URL']:
         logger.info(f"Service: Sending {len(new_offer_dicts)} new offers to Discord webhook...")
@@ -69,10 +104,10 @@ def fetch_and_store_offers_service():
     elif not CONFIG['DISCORD_WEBHOOK_URL']:
          logger.info("Service: Discord webhook URL not configured, skipping notification step.")
     else:
-        logger.info("Service: No new offers to notify.")
+        logger.info("Service: No new offers with skills to notify.")
 
 
-    # 5. Return Summary
+    # 6. Return Summary
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
     logger.info(f"Service: Fetch and store process finished in {duration:.2f} seconds.")
@@ -115,14 +150,47 @@ def process_pending_details_service(limit=10):
 
             # 4. Extract and Store Skills and Languages
             if job_details and isinstance(job_details, dict):
-                # Navigate the structure to find skills section data
-                skills_section = job_details.get('skillsSectionData', {}) if isinstance(job_details.get('skillsSectionData'), dict) else {}
+                # Add additional logging to better diagnose skill section data
+                logger.debug(f"Service: Job details for offer ID {offer_id}, keys: {list(job_details.keys())}")
                 
-                # Get skills data
-                skills_data = skills_section.get('skills')
+                # Improved navigation to find the skills section
+                skills_section = None
+                skills_data = None
+                languages_data = None
                 
-                # Get language requirements
-                languages_data = skills_section.get('minLanguages')
+                # Primary path for skills section data
+                if 'skillsSectionData' in job_details and isinstance(job_details.get('skillsSectionData'), dict):
+                    skills_section = job_details.get('skillsSectionData')
+                    logger.debug(f"Service: Found skills section via skillsSectionData for offer ID {offer_id}")
+                
+                # Alternative path in case structure has changed
+                elif 'content' in job_details and isinstance(job_details.get('content'), dict):
+                    content = job_details.get('content')
+                    if 'skills' in content and isinstance(content.get('skills'), dict):
+                        skills_section = content.get('skills')
+                        logger.debug(f"Service: Found skills section via content.skills for offer ID {offer_id}")
+                
+                # Log skills section keys if found
+                if skills_section:
+                    logger.debug(f"Service: Skills section keys for offer ID {offer_id}: {list(skills_section.keys())}")
+                    
+                    # Get skills data
+                    if 'skills' in skills_section:
+                        skills_data = skills_section.get('skills')
+                    elif 'must' in skills_section or 'nice' in skills_section or 'extra' in skills_section:
+                        # The section itself might be the skills data
+                        skills_data = skills_section
+                    
+                    # Get language requirements
+                    if 'minLanguages' in skills_section:
+                        languages_data = skills_section.get('minLanguages')
+                    elif 'languages' in skills_section:
+                        languages_data = skills_section.get('languages')
+                
+                if skills_data:
+                    logger.debug(f"Service: Found skills data for offer ID {offer_id}: {list(skills_data.keys()) if isinstance(skills_data, dict) else 'not a dict'}")
+                else:
+                    logger.warning(f"Service: No skills data found for offer ID {offer_id} in the skills section")
                 
                 skills_stored = False
                 languages_stored = False

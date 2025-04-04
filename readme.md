@@ -8,6 +8,7 @@ A simple Dockerized application designed to fetch active job offers from GetManf
 
 - Fetches currently active job offers (in Spanish) from Manfred's public API.
 - Retrieves detailed data for individual job offers, including skills information.
+- Dynamically manages the BUILD_ID_HASH by fetching it from the website, ensuring continuous operation.
 - Runs as an isolated Docker container.
 - Configurable through environment variables (API endpoints, notification webhook).
 - Includes a SQLite database (`/app/data/history.db`) for job history and skills data persistence.
@@ -28,6 +29,7 @@ This tool provides several REST API endpoints:
 | `/process-job-details` | GET | Processes pending job offers to retrieve skills information |
 | `/job-skills/{offer_id}` | GET | Retrieves stored skills for a specific job offer |
 | `/send-notifications` | GET | Sends pending notifications to the configured webhook |
+| `/update-build-hash` | GET | Manually triggers an update of the BUILD_ID_HASH from Manfred's website |
 | `/health` | GET | System health check, including database connectivity |
 | `/api/docs` | GET | Swagger UI documentation for all endpoints |
 
@@ -45,11 +47,9 @@ This tool primarily interacts with the following GetManfred public API endpoints
    `https://www.getmanfred.com/_next/data/BUILD_ID_HASH/es/job-offers/{job-id}/{job-name}.json`  
    **Purpose:** Fetches detailed information about a specific job offer.  
    **Placeholders:**
-   - `BUILD_ID_HASH`: This is a dynamic hash from the website's build (e.g., `BIDHCAYe6i8X-XyfefcMo`). This **can change without notice**, potentially breaking detail fetching.
+   - `BUILD_ID_HASH`: This is a dynamic hash from the website's build. The application automatically detects and updates this hash when it changes.
    - `{job-id}`: The unique ID of the job offer (from the Offers List).
    - `{job-name}`: The URL-friendly slug or name of the job offer.
-
-> ⚠️ **Note:** Due to the potentially dynamic nature of the `BUILD_ID_HASH`, relying heavily on this endpoint might require periodic maintenance. You may need to inspect the website's network traffic to find the current build hash.
 
 ---
 
@@ -67,11 +67,10 @@ The application is configured using environment variables when running the Docke
 |---------------------------|---------------------------------------------|-------------------------------------------------------------------------|
 | `EXTERNAL_ENDPOINT_URL`   | API endpoint for job offers                 | `https://www.getmanfred.com/api/v2/public/offers?lang=ES&onlyActive=true` |
 | `DISCORD_WEBHOOK_URL`     | Webhook URL for notifications               | **Required**, no default                                                |
-| `BUILD_ID_HASH`           | Hash for detail API endpoints               | `BIDHCAYe6i8X-XyfefcMo`                                                 |
-| `DETAIL_ENDPOINT_PATTERN` | Pattern for detail endpoints                | Uses `BUILD_ID_HASH`                                                   |
+| `DETAIL_ENDPOINT_PATTERN` | Pattern for detail endpoints                | `https://www.getmanfred.com/_next/data/${BUILD_ID_HASH}/es/job-offers/{offer_id}/{offer_slug}.json` |
 | `DB_PATH`                 | Path to SQLite database                     | `/app/data/history.db`                                                 |
 | `RESET_DB`                | Whether to reset the database on startup    | `false`                                                                |
-| `FETCH_INTERVAL`          | Time between fetches (seconds)             | `300`                                                                   |
+| `FETCH_INTERVAL`          | Time between fetches (seconds)             | `3600` (1 hour)                                                         |
 | `MAX_RETRIES`             | Maximum API request retries                | `3`                                                                     |
 | `RETRY_BACKOFF`           | Backoff factor for retries                 | `0.5`                                                                   |
 | `FLASK_ENV`               | Flask environment setting                  | `production`                                                           |
@@ -184,3 +183,23 @@ Configure the webhook URL in the `.env` file:
 ```
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/your-webhook-url-here
 ```
+
+---
+
+## Automatic BUILD_ID_HASH Management
+
+The application manages the BUILD_ID_HASH dynamically, which is crucial for accessing the job details endpoint:
+
+1. **Initial Fetch**: On first startup, the application will attempt to fetch the current hash from Manfred's website.
+
+2. **Persistent Storage**: The hash is stored in a JSON file at `./data/config/build_hash.json` for persistence between restarts.
+
+3. **Auto-Updates**: If a request fails due to an invalid hash, the system automatically:
+   - Fetches the Manfred homepage
+   - Extracts the current hash
+   - Updates the JSON file 
+   - Retries the original request with the updated hash
+
+4. **Manual Updates**: You can trigger a manual update via the `/update-build-hash` endpoint if needed.
+
+> 📝 **Note**: You do not need to set the BUILD_ID_HASH in your .env file anymore. The application will handle this automatically.
