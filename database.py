@@ -59,6 +59,7 @@ class JobOffer(Base):
     timestamp = Column(DateTime, default=datetime.now, nullable=False)
     notification_sent = Column(Boolean, default=False, nullable=False)
     skills_retrieved = Column(Boolean, default=False, nullable=False)
+    discord_message_id = Column(String)  # New column to store Discord message ID
     
     # Relationships
     skills = relationship("JobSkill", back_populates="job_offer", cascade="all, delete-orphan")
@@ -454,7 +455,8 @@ def store_or_update_offers(offers):
                     slug=slug,
                     timestamp=datetime.now(),
                     notification_sent=False,
-                    skills_retrieved=False
+                    skills_retrieved=False,
+                    discord_message_id=None
                 )
                 session.add(new_offer)
                 new_count += 1
@@ -495,11 +497,76 @@ def get_offer_by_id(offer_id):
             'slug': offer.slug,
             'timestamp': offer.timestamp,
             'notification_sent': offer.notification_sent,
-            'skills_retrieved': offer.skills_retrieved
+            'skills_retrieved': offer.skills_retrieved,
+            'discord_message_id': offer.discord_message_id
         }
     except Exception as e:
         logger.error(f"Error fetching offer by ID {offer_id}: {e}", exc_info=True)
         return None
+    finally:
+        session.close()
+
+# New function to update Discord message ID
+def update_discord_message_id(offer_id, message_id):
+    """Updates the Discord message ID for a job offer."""
+    session = Session()
+    try:
+        result = session.query(JobOffer)\
+            .filter(JobOffer.offer_id == offer_id)\
+            .update({JobOffer.discord_message_id: message_id}, synchronize_session=False)
+        
+        session.commit()
+        logger.info(f"Updated Discord message ID to {message_id} for offer ID {offer_id}")
+        return result > 0
+    except Exception as e:
+        logger.error(f"Failed to update Discord message ID for offer ID {offer_id}: {e}", exc_info=True)
+        session.rollback()
+        return False
+    finally:
+        session.close()
+
+# New function to find obsolete notifications
+def get_obsolete_discord_notifications(active_offer_ids):
+    """Retrieves job offers that have Discord message IDs but are no longer in the active offers list."""
+    session = Session()
+    try:
+        offers = session.query(
+            JobOffer.offer_id, JobOffer.discord_message_id
+        ).filter(JobOffer.discord_message_id != None)\
+        .filter(JobOffer.discord_message_id != '')\
+        .filter(~JobOffer.offer_id.in_(active_offer_ids))\
+        .all()
+        
+        # Convert SQLAlchemy result to list of dictionaries
+        return [
+            {
+                'offer_id': offer.offer_id,
+                'discord_message_id': offer.discord_message_id
+            } 
+            for offer in offers
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching obsolete Discord notifications: {e}", exc_info=True)
+        return []
+    finally:
+        session.close()
+
+# New function to clear Discord message ID
+def clear_discord_message_id(offer_id):
+    """Clears the Discord message ID for a job offer."""
+    session = Session()
+    try:
+        result = session.query(JobOffer)\
+            .filter(JobOffer.offer_id == offer_id)\
+            .update({JobOffer.discord_message_id: None}, synchronize_session=False)
+        
+        session.commit()
+        logger.info(f"Cleared Discord message ID for offer ID {offer_id}")
+        return result > 0
+    except Exception as e:
+        logger.error(f"Failed to clear Discord message ID for offer ID {offer_id}: {e}", exc_info=True)
+        session.rollback()
+        return False
     finally:
         session.close()
 # --- END OF FILE database.py ---

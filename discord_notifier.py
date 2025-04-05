@@ -1,6 +1,7 @@
 # --- START OF FILE discord_notifier.py ---
 import logging
 import time
+import json
 from datetime import datetime
 from discord_webhook import DiscordWebhook, DiscordEmbed
 
@@ -242,6 +243,20 @@ def send_discord_notification(offer_dict):
             response = response[0]  # Get the first response if it's a list
 
         if response and 200 <= response.status_code < 300:
+            try:
+                # Extract message ID from response JSON
+                response_json = response.json()
+                message_id = response_json.get('id')
+                if message_id:
+                    # Update database with message ID
+                    from database import update_discord_message_id
+                    update_discord_message_id(offer_id, message_id)
+                    logger.info(f"Saved Discord message ID {message_id} for offer ID: {offer_id_str}")
+                else:
+                    logger.warning(f"Could not find message ID in Discord response for offer ID {offer_id_str}")
+            except Exception as e:
+                logger.error(f"Error extracting message ID from Discord response for offer ID {offer_id_str}: {e}")
+                
             logger.info(f"Successfully sent Discord notification for offer ID: {offer_id_str}")
             return True
         else:
@@ -257,6 +272,46 @@ def send_discord_notification(offer_dict):
 
     except Exception as e:
         logger.error(f"Failed to send Discord webhook for offer ID {offer_id_str}: {str(e)}", exc_info=True)
+        return False
+
+# --- Delete Discord Message ---
+def delete_discord_message(message_id):
+    """
+    Deletes a Discord message by its ID.
+    Returns True on success, False on failure.
+    """
+    webhook_url = CONFIG.get('DISCORD_WEBHOOK_URL')
+    if not webhook_url:
+        logger.warning("Discord webhook URL not configured. Cannot delete message.")
+        return False
+    
+    try:
+        # Extract webhook ID and token from webhook URL
+        webhook_parts = webhook_url.split('/')
+        if len(webhook_parts) < 7:
+            logger.error(f"Invalid webhook URL format for deleting message {message_id}")
+            return False
+        
+        webhook_id = webhook_parts[-2]
+        webhook_token = webhook_parts[-1]
+        
+        # Construct delete URL
+        delete_url = f"https://discord.com/api/webhooks/{webhook_id}/{webhook_token}/messages/{message_id}"
+        
+        # Use the existing http_client from manfred_api.py
+        from manfred_api import http_client
+        response = http_client.delete(delete_url)
+        
+        # Check for success
+        if 200 <= response.status_code < 300 or response.status_code == 404:  # 404 means it's already gone, which is fine
+            logger.info(f"Successfully deleted Discord message {message_id}")
+            return True
+        else:
+            logger.error(f"Failed to delete Discord message {message_id}: HTTP {response.status_code}")
+            return False
+    
+    except Exception as e:
+        logger.error(f"Error deleting Discord message {message_id}: {e}", exc_info=True)
         return False
 
 # --- Notification Sender (Batch) ---

@@ -44,6 +44,15 @@ def initialize_scheduler(app: FastAPI):
         replace_existing=True
     )
     
+    # Add job to clean up obsolete notifications - runs once per day
+    scheduler.add_job(
+        func=cleanup_obsolete_notifications_job,
+        trigger=IntervalTrigger(hours=24),  # Run once per day
+        id='cleanup_obsolete_notifications',
+        name='Clean up Discord messages for obsolete job offers',
+        replace_existing=True
+    )
+    
     # Start the scheduler
     scheduler.start()
     
@@ -103,5 +112,21 @@ def scheduled_fetch_job():
     
     except Exception as e:
         logger.error(f"Scheduler: Error during scheduled job fetch: {e}", exc_info=True)
+
+def cleanup_obsolete_notifications_job():
+    """Function to be executed by the scheduler to clean up obsolete Discord notifications."""
+    logger.info(f"Scheduler: Starting cleanup of obsolete Discord notifications")
+    
+    try:
+        # Lazy import services
+        services = get_services()
+        
+        # Call the service function to clean up obsolete notifications
+        deleted_count = services.cleanup_obsolete_job_notifications_service()
+        
+        logger.info(f"Scheduler: Completed obsolete notifications cleanup. Deleted {deleted_count} messages.")
+    
+    except Exception as e:
+        logger.error(f"Scheduler: Error during obsolete notifications cleanup: {e}", exc_info=True)
 
 # --- END OF FILE scheduler.py ---

@@ -119,7 +119,7 @@ The easiest way to run the application is with Docker Compose:
 
 5. Access the API documentation:
    ```
-   http://localhost:8080/api/docs
+   http://localhost:8080/docs
    ```
 
 ---

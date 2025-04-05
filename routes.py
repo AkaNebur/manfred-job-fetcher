@@ -242,4 +242,34 @@ async def health_check_route():
             },
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE
         )
+
+
+@router.get("/cleanup-notifications", 
+    summary="Clean up obsolete job notifications",
+    description="Deletes Discord messages for job offers that are no longer active.",
+    response_description="Information about the cleanup operation.",
+    tags=["Notifications"])
+async def cleanup_notifications_route():
+    logger.info("Route: GET /cleanup-notifications")
+    if not services.CONFIG['DISCORD_WEBHOOK_URL']:
+        logger.warning("Route: /cleanup-notifications called but DISCORD_WEBHOOK_URL is not set.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Discord webhook URL not configured"
+        )
+        
+    try:
+        deleted_count = services.cleanup_obsolete_job_notifications_service()
+        
+        return {
+            "status": "success",
+            "deleted_count": deleted_count,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.exception("Route: Unexpected error in /cleanup-notifications")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An internal server error occurred"
+        )
 # --- END OF FILE routes.py ---

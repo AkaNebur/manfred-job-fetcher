@@ -352,4 +352,60 @@ def get_health_status_service():
     logger.debug(f"Service: Health status: {health_status}")
     return health_status, is_healthy
 
+def cleanup_obsolete_job_notifications_service():
+    """
+    Service layer function to find jobs that are no longer in the latest fetch 
+    and delete their Discord messages.
+    Returns the number of messages deleted.
+    """
+    logger.info("Service: Starting cleanup of obsolete job notifications.")
+    
+    if not CONFIG['DISCORD_WEBHOOK_URL']:
+        logger.warning("Service: Discord webhook URL not configured. Cannot delete notifications.")
+        return 0
+    
+    deleted_count = 0
+    try:
+        # 1. Get latest active offer IDs
+        latest_offers = manfred_api.fetch_raw_offers_list()
+        if not latest_offers or not isinstance(latest_offers, list):
+            logger.error("Service: Failed to fetch latest offers list for cleanup.")
+            return 0
+        
+        active_offer_ids = [offer.get('id') for offer in latest_offers if offer.get('id')]
+        logger.info(f"Service: Found {len(active_offer_ids)} active offers in latest fetch.")
+        
+        # 2. Find offers in our DB that have discord_message_id set but are no longer active
+        obsolete_offers = database.get_obsolete_discord_notifications(active_offer_ids)
+        if not obsolete_offers:
+            logger.info("Service: No obsolete Discord notifications found.")
+            return 0
+        
+        logger.info(f"Service: Found {len(obsolete_offers)} obsolete Discord notifications to clean up.")
+        
+        # 3. Delete each obsolete Discord message
+        for offer in obsolete_offers:
+            offer_id = offer.get('offer_id')
+            message_id = offer.get('discord_message_id')
+            
+            if not message_id:
+                continue
+            
+            # Delete the Discord message
+            success = discord_notifier.delete_discord_message(message_id)
+            if success:
+                # Update the database to clear the message ID
+                database.clear_discord_message_id(offer_id)
+                deleted_count += 1
+                logger.info(f"Service: Successfully deleted Discord message {message_id} for obsolete offer ID {offer_id}")
+            else:
+                logger.warning(f"Service: Failed to delete Discord message {message_id} for obsolete offer ID {offer_id}")
+        
+        logger.info(f"Service: Finished cleanup. Deleted {deleted_count}/{len(obsolete_offers)} obsolete Discord notifications.")
+        return deleted_count
+    
+    except Exception as e:
+        logger.error(f"Service: Error during cleanup of obsolete job notifications: {e}", exc_info=True)
+        return deleted_count
+
 # --- END OF FILE services.py ---
