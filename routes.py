@@ -3,14 +3,16 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Path, status
+from fastapi import APIRouter, HTTPException, Depends, Query, Path, status, Body
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 import services
 import manfred_api
 from models import (
     OffersList, StoreOffersResponse, ProcessDetailsResponse,
-    JobSkillsResponse, NotificationsResponse, HealthCheckResponse
+    JobSkillsResponse, NotificationsResponse, HealthCheckResponse,
+    ProcessLimitRequest
 )
 
 logger = logging.getLogger(__name__)
@@ -54,14 +56,14 @@ async def get_raw_offers():
         )
 
 
-@router.get("/store-offers", 
+@router.post("/store-offers", 
     response_model=StoreOffersResponse,
     summary="Fetch, store/update job offers, process skills, notify",
     description="Orchestrates fetching offers, storing new/updating existing ones, attempting to fetch skills for new offers, and sending Discord notifications for new offers.",
     response_description="Summary of actions performed.",
     tags=["Data Storage & Processing"])
 async def store_offers_route():
-    logger.info("Route: GET /store-offers")
+    logger.info("Route: POST /store-offers")
     try:
         result = services.fetch_and_store_offers_service()
         status_code = status.HTTP_500_INTERNAL_SERVER_ERROR if result.get("status") == "error" else status.HTTP_200_OK
@@ -80,15 +82,16 @@ async def store_offers_route():
         )
 
 
-@router.get("/process-job-details", 
+@router.post("/process-job-details", 
     response_model=ProcessDetailsResponse,
     summary="Process job offers to fetch and store detailed skills information",
     description="Finds job offers marked as needing skills details, fetches their data from the Manfred API, stores the extracted skills, and marks the offer as processed.",
     response_description="Information about the processing batch.",
     tags=["Data Processing"])
-async def process_job_details_route(limit: int = Query(10, description="Maximum number of offers to process in this batch")):
-    logger.info("Route: GET /process-job-details")
+async def process_job_details_route(request: ProcessLimitRequest = Body(default=ProcessLimitRequest())):
+    logger.info("Route: POST /process-job-details")
     try:
+        limit = request.limit
         if limit <= 0:
             limit = 10  # Enforce a positive limit
 
@@ -139,14 +142,14 @@ async def get_job_skills_route(offer_id: int = Path(..., description="The unique
         )
 
 
-@router.get("/send-notifications", 
+@router.post("/send-notifications", 
     response_model=NotificationsResponse,
     summary="Send Discord notifications for pending job offers",
     description="Checks the database for job offers where 'notification_sent' is false, attempts to send them to the configured Discord webhook, and updates their status in the database.",
     response_description="Information about notifications sent.",
     tags=["Notifications"])
-async def send_pending_notifications_route(limit: int = Query(5, description="Maximum number of notifications to send in this batch")):
-    logger.info("Route: GET /send-notifications")
+async def send_pending_notifications_route(request: ProcessLimitRequest = Body(default=ProcessLimitRequest(limit=5))):
+    logger.info("Route: POST /send-notifications")
     if not services.CONFIG['DISCORD_WEBHOOK_URL']:
         logger.warning("Route: /send-notifications called but DISCORD_WEBHOOK_URL is not set.")
         raise HTTPException(
@@ -155,6 +158,7 @@ async def send_pending_notifications_route(limit: int = Query(5, description="Ma
         )
 
     try:
+        limit = request.limit
         if limit <= 0:
             limit = 5  # Enforce a positive limit
 
@@ -173,13 +177,13 @@ async def send_pending_notifications_route(limit: int = Query(5, description="Ma
         )
 
 
-@router.get("/update-build-hash", 
+@router.put("/update-build-hash", 
     summary="Update BUILD_ID_HASH",
     description="Attempts to fetch and update the BUILD_ID_HASH from the Manfred website.",
     response_description="Result of the hash update operation.",
     tags=["System"])
 async def update_build_hash_route():
-    logger.info("Route: GET /update-build-hash")
+    logger.info("Route: PUT /update-build-hash")
     try:
         # Import the function from manfred_api
         from manfred_api import fetch_and_update_build_id_hash
@@ -244,13 +248,13 @@ async def health_check_route():
         )
 
 
-@router.get("/cleanup-notifications", 
+@router.delete("/cleanup-notifications", 
     summary="Clean up obsolete job notifications",
     description="Deletes Discord messages for job offers that are no longer active.",
     response_description="Information about the cleanup operation.",
     tags=["Notifications"])
 async def cleanup_notifications_route():
-    logger.info("Route: GET /cleanup-notifications")
+    logger.info("Route: DELETE /cleanup-notifications")
     if not services.CONFIG['DISCORD_WEBHOOK_URL']:
         logger.warning("Route: /cleanup-notifications called but DISCORD_WEBHOOK_URL is not set.")
         raise HTTPException(

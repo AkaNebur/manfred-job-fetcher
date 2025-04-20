@@ -25,12 +25,13 @@ This tool provides several REST API endpoints:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/raw-offers` | GET | Fetches raw data from the Manfred API without processing |
-| `/store-offers` | GET | Fetches, stores, and processes job offers and skills |
-| `/process-job-details` | GET | Processes pending job offers to retrieve skills information |
+| `/store-offers` | POST | Fetches, stores, and processes job offers and skills |
+| `/process-job-details` | POST | Processes pending job offers to retrieve skills information |
 | `/job-skills/{offer_id}` | GET | Retrieves stored skills for a specific job offer |
-| `/send-notifications` | GET | Sends pending notifications to the configured webhook |
-| `/update-build-hash` | GET | Manually triggers an update of the BUILD_ID_HASH from Manfred's website |
+| `/send-notifications` | POST | Sends pending notifications to the configured webhook |
+| `/update-build-hash` | PUT | Manually triggers an update of the BUILD_ID_HASH from Manfred's website |
 | `/health` | GET | System health check, including database connectivity |
+| `/cleanup-notifications` | DELETE | Deletes messages for job offers that are no longer active |
 | `/api/docs` | GET | Swagger UI documentation for all endpoints |
 
 ---
