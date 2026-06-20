@@ -100,6 +100,25 @@ This application is configured using environment variables. For convenience, you
 
 ---
 
+## Running Locally (without Docker)
+
+This is a plain Python app, so you don't need Docker to run it. Requires **Python 3.12+**.
+
+```bash
+pip install -r requirements.txt
+python run_local.py
+```
+
+Then open http://localhost:8080/docs
+
+`run_local.py` loads a local `.env` if present (copy `.env.sample` to `.env` to set
+options such as `DISCORD_WEBHOOK_URL`) and stores the database under `./data`. Without
+a webhook configured the app still runs and stores offers; it just skips Discord
+notifications. The Docker setup's SQLite Web UI is not included in this mode — browse
+`./data/history.db` with any SQLite tool if needed.
+
+---
+
 ## Running with Docker Compose
 
 The easiest way to run the application is with Docker Compose:
