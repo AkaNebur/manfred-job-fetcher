@@ -32,7 +32,7 @@ This tool provides several REST API endpoints:
 | `/update-build-hash` | PUT | Manually triggers an update of the BUILD_ID_HASH from Manfred's website |
 | `/health` | GET | System health check, including database connectivity |
 | `/cleanup-notifications` | DELETE | Deletes messages for job offers that are no longer active |
-| `/api/docs` | GET | Swagger UI documentation for all endpoints |
+| `/docs` | GET | Swagger UI documentation for all endpoints |
 
 ---
 
@@ -74,10 +74,13 @@ The application is configured using environment variables when running the Docke
 | `FETCH_INTERVAL`          | Time between fetches (seconds)             | `3600` (1 hour)                                                         |
 | `MAX_RETRIES`             | Maximum API request retries                | `3`                                                                     |
 | `RETRY_BACKOFF`           | Backoff factor for retries                 | `0.5`                                                                   |
-| `FLASK_ENV`               | Flask environment setting                  | `production`                                                           |
-| `FLASK_DEBUG`             | Flask debug mode                           | `0`                                                                    |
+| `CORS_ALLOW_ORIGINS`      | Comma-separated allowed CORS origins (`*` allows all; credentials are only enabled when explicit origins are set) | `*` |
+| `SQLALCHEMY_ECHO`         | Log all SQL statements (development only)  | `false`                                                                |
+| `FLASK_DEBUG`             | Enable auto-reload when running directly   | `0`                                                                    |
 
 You can define these in a `.env` file.
+
+Configuration is loaded and validated at startup via [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/): values are type-coerced and an invalid value (e.g. a non-numeric `MAX_RETRIES`) aborts startup with a clear, per-field error.
 
 ---
 
@@ -155,9 +158,16 @@ The database is persisted on the host machine in the `./data` directory.
 
 ## Running the Tests
 
-The project ships with a `pytest` suite covering the persistence layer, the Discord
-embed formatters and CORS configuration parsing. The tests run against an isolated
-temporary SQLite database and require no network access or Discord webhook.
+The project ships with a `pytest` suite covering every layer:
+
+- **Persistence** (`database.py`) — store/update offers, skills, languages, notification state.
+- **HTTP client** (`manfred_api.py`) — retry/backoff behaviour and response parsing.
+- **Service orchestration** (`services.py`) — the fetch/store/process/notify flow and cleanup.
+- **API routes** (`routes.py`) — endpoint contracts and the synchronous-handler guard.
+- **Discord formatters** and **configuration** parsing/validation.
+
+The tests run against an isolated temporary SQLite database and mock the external
+boundaries (Manfred API and Discord), so they require no network access or webhook.
 
 ```bash
 pip install -r requirements-dev.txt
