@@ -42,9 +42,17 @@ class Settings(BaseSettings):
     # from JSON-decoding it so the validator below can split it.
     CORS_ALLOW_ORIGINS: Annotated[List[str], NoDecode] = ["*"]
 
+    # Relevance filter: "off" disables it, "rules" uses the criteria questionnaire,
+    # "ai" uses the Claude-based scorer. FILTER_BEHAVIOR is "hard" (only notify
+    # offers at/above RELEVANCE_THRESHOLD) or "annotate" (notify all, tag the score).
+    FILTER_MODE: str = "off"
+    FILTER_BEHAVIOR: str = "hard"
+    RELEVANCE_THRESHOLD: int = 60
+
     # --- Derived / runtime fields (populated in load_config) ---
     BUILD_ID_HASH: str = ""
     CONFIG_FILE_PATH: str = ""
+    FILTER_RULES_PATH: str = ""  # path to the rules-mode criteria JSON file
 
     # --- Constants (not environment-driven) ---
     SQLALCHEMY_TRACK_MODIFICATIONS: bool = False
@@ -84,6 +92,9 @@ def load_config():
     config_dir = os.path.join(os.path.dirname(settings.DB_PATH), "config")
     config_file = os.path.join(config_dir, "build_hash.json")
     settings.CONFIG_FILE_PATH = config_file
+    settings.FILTER_RULES_PATH = os.getenv(
+        "FILTER_RULES_PATH", os.path.join(config_dir, "filter_rules.json")
+    )
 
     # 1) Try to load BUILD_ID_HASH from the JSON file first.
     build_id_hash = ""

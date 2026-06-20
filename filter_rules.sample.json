@@ -1,0 +1,10 @@
+{
+  "min_salary": 40000,
+  "min_remote_percentage": 50,
+  "required_skills_any": ["Python", "Go", "Django", "FastAPI"],
+  "excluded_skills": ["PHP"],
+  "excluded_companies": [],
+  "position_includes": [],
+  "position_excludes": ["Consultant", "Staff Augmentation"],
+  "locations_any": ["Madrid", "Remote"]
+}
