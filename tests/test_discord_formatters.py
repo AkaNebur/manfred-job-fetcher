@@ -1,5 +1,16 @@
 """Unit tests for the pure Discord embed formatting helpers."""
+import discord_notifier
 from discord_notifier import _format_skills_for_field, _format_language_for_field
+
+
+def test_embed_includes_relevance_reason():
+    offer = {
+        "id": 1, "position": "Backend", "company": {"name": "ACME"}, "slug": "x",
+        "relevance_reason": "Strong Python match", "relevance_score": 88,
+    }
+    embed = discord_notifier._build_discord_embed(offer)
+    field_names = [f["name"] for f in embed.fields]
+    assert any("Why it matched" in name for name in field_names)
 
 
 def test_format_skills_empty_returns_none():

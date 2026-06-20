@@ -6,8 +6,52 @@ from config import CONFIG
 import database
 import manfred_api
 import discord_notifier
+import relevance
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_relevance_filter(offer_dicts):
+    """Score offers (storing the verdict once) and return the subset to notify, annotated.
+
+    No-op when FILTER_MODE='off'. With FILTER_BEHAVIOR='hard', only offers scoring at or
+    above RELEVANCE_THRESHOLD are kept; with 'annotate', all are kept and the score/reason
+    are attached for the Discord embed. Already-scored offers reuse the stored verdict (no
+    re-scoring cost). A None verdict (scorer disabled or failed) keeps the offer, so the
+    pipeline degrades to not filtering rather than dropping offers.
+    """
+    if (CONFIG['FILTER_MODE'] or 'off').lower() == 'off':
+        return offer_dicts
+
+    behavior = (CONFIG['FILTER_BEHAVIOR'] or 'hard').lower()
+    threshold = CONFIG['RELEVANCE_THRESHOLD']
+    kept = []
+    for offer in offer_dicts:
+        offer_id = offer.get('id')
+        db_offer = database.get_offer_by_id(offer_id) or {}
+
+        if db_offer.get('filter_processed'):
+            score = db_offer.get('relevance_score')
+            reason = db_offer.get('relevance_reason')
+        else:
+            skills = database.get_job_skills_from_db(offer_id)
+            languages = database.get_job_languages_from_db(offer_id)
+            verdict = relevance.score_offer(offer, skills, languages)
+            if verdict is None:
+                kept.append(offer)
+                continue
+            database.store_relevance(offer_id, verdict['score'], verdict['reason'])
+            score, reason = verdict['score'], verdict['reason']
+
+        offer['relevance_score'] = score
+        offer['relevance_reason'] = reason
+
+        if behavior == 'annotate' or (score is not None and score >= threshold):
+            kept.append(offer)
+        else:
+            logger.info(f"Service: Offer ID {offer_id} filtered out (score {score} < {threshold}).")
+
+    return kept
 
 def fetch_and_store_offers_service():
     """
@@ -86,6 +130,9 @@ def fetch_and_store_offers_service():
                         logger.warning(f"Service: Skipping notification for offer ID {offer_id} because skills have not been retrieved yet.")
         # Replace the original list with the enriched one
         new_offer_dicts = enriched_new_offers
+
+    # 4.5 Apply the relevance filter (no-op when FILTER_MODE='off').
+    new_offer_dicts = _apply_relevance_filter(new_offer_dicts)
 
     # 5. Send notifications for NEW offers with skills
     webhook_sent_count = 0
@@ -277,6 +324,9 @@ def send_pending_notifications_service(limit=5):
                  'locations': offer_row['locations'].split(', ') if offer_row['locations'] else [],
                  'slug': offer_row['slug'] if offer_row['slug'] else f"job-{offer_row['offer_id']}"
              })
+
+        # 2.5 Apply the relevance filter (no-op when FILTER_MODE='off').
+        offers_to_send_dicts = _apply_relevance_filter(offers_to_send_dicts)
 
         # 3. Send notifications in a batch
         if offers_to_send_dicts:

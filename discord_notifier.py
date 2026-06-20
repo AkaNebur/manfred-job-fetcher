@@ -131,6 +131,17 @@ def _build_discord_embed(offer_dict):
             inline=False
         )
 
+    # Relevance match reason (present when the AI/rules filter is active)
+    relevance_reason = offer_dict.get('relevance_reason')
+    if relevance_reason:
+        score = offer_dict.get('relevance_score')
+        field_name = f"🤖 Why it matched ({score}/100)" if score is not None else "🤖 Why it matched"
+        embed.add_embed_field(
+            name=field_name,
+            value=relevance_reason[:1020],
+            inline=False
+        )
+
     # Add language requirements field
     languages_text = _format_language_for_field(languages_data)
     if languages_text:
