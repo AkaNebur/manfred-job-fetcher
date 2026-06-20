@@ -13,12 +13,14 @@ import os
 
 from dotenv import load_dotenv
 
-# Pick up a local .env if the developer created one (does not override real env vars).
-load_dotenv()
-
-# Default to a database inside the repo's ./data directory instead of the
-# container path (/app/data/history.db) used in Docker.
+# Default to a database inside the repo's ./data directory instead of the container
+# path (/app/data/history.db) used in Docker. This is set before load_dotenv() so the
+# container DB_PATH shipped in .env.sample doesn't leak into a local run; an explicit
+# shell `DB_PATH` still wins.
 os.environ.setdefault("DB_PATH", os.path.join("data", "history.db"))
+
+# Pick up a local .env if the developer created one (does not override existing vars).
+load_dotenv()
 
 import uvicorn
 
