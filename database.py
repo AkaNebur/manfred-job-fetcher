@@ -5,8 +5,7 @@ import logging
 from datetime import datetime
 
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, ForeignKey, DateTime, CheckConstraint, Index
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship, scoped_session
+from sqlalchemy.orm import sessionmaker, relationship, scoped_session, declarative_base
 from sqlalchemy.exc import SQLAlchemyError
 
 from config import CONFIG
