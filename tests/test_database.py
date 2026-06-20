@@ -146,3 +146,40 @@ def test_obsolete_discord_notifications_lifecycle():
 
     assert database.clear_discord_message_id(1) is True
     assert database.get_obsolete_discord_notifications([2]) == []
+
+
+# --- relevance columns -----------------------------------------------------
+
+def test_store_relevance_persists_and_marks_processed():
+    database.store_or_update_offers([_offer(1)])
+    assert database.store_relevance(1, 85, "good match") is True
+
+    row = database.get_offer_by_id(1)
+    assert row["relevance_score"] == 85
+    assert row["relevance_reason"] == "good match"
+    assert row["filter_processed"] is True
+
+
+def test_relevance_columns_present_on_fresh_schema():
+    from sqlalchemy import inspect
+
+    cols = {c["name"] for c in inspect(database.engine).get_columns("job_offers")}
+    assert {"relevance_score", "relevance_reason", "filter_processed"} <= cols
+
+
+def test_migration_adds_missing_relevance_columns():
+    from sqlalchemy import text, inspect
+
+    # Recreate a legacy job_offers table without the relevance columns.
+    with database.engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS job_offers"))
+        conn.execute(text(
+            "CREATE TABLE job_offers ("
+            "id INTEGER PRIMARY KEY, offer_id INTEGER, position TEXT, company_name TEXT, "
+            "notification_sent BOOLEAN DEFAULT 0, skills_retrieved BOOLEAN DEFAULT 0)"
+        ))
+
+    database._ensure_relevance_columns()
+
+    cols = {c["name"] for c in inspect(database.engine).get_columns("job_offers")}
+    assert {"relevance_score", "relevance_reason", "filter_processed"} <= cols

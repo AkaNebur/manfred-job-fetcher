@@ -59,6 +59,10 @@ class JobOffer(Base):
     notification_sent = Column(Boolean, default=False, nullable=False)
     skills_retrieved = Column(Boolean, default=False, nullable=False)
     discord_message_id = Column(String)  # New column to store Discord message ID
+    # Relevance filter columns
+    relevance_score = Column(Integer)          # 0-100; null until scored
+    relevance_reason = Column(Text)            # human-readable explanation
+    filter_processed = Column(Boolean, default=False, nullable=False)
     
     # Relationships
     skills = relationship("JobSkill", back_populates="job_offer", cascade="all, delete-orphan")
@@ -130,10 +134,34 @@ def init_db():
     try:
         # Create all tables
         Base.metadata.create_all(engine)
+        # Apply lightweight, idempotent column migrations for pre-existing databases.
+        _ensure_relevance_columns()
         logger.info("Database initialized/verified successfully.")
     except Exception as e:
         logger.error(f"Failed to initialize or migrate database: {e}", exc_info=True)
         raise
+
+
+def _ensure_relevance_columns():
+    """Add the relevance-filter columns to job_offers if an older database lacks them.
+
+    create_all() never alters existing tables, so a database created before these
+    columns existed needs them added explicitly. No-op on fresh databases.
+    """
+    from sqlalchemy import text, inspect
+
+    existing = {col["name"] for col in inspect(engine).get_columns("job_offers")}
+    migrations = {
+        "relevance_score": "ALTER TABLE job_offers ADD COLUMN relevance_score INTEGER",
+        "relevance_reason": "ALTER TABLE job_offers ADD COLUMN relevance_reason TEXT",
+        "filter_processed": "ALTER TABLE job_offers ADD COLUMN filter_processed BOOLEAN NOT NULL DEFAULT 0",
+    }
+    pending = [sql for col, sql in migrations.items() if col not in existing]
+    if pending:
+        with engine.begin() as conn:
+            for sql in pending:
+                conn.execute(text(sql))
+        logger.info(f"Applied {len(pending)} relevance-column migration(s) to job_offers.")
 
 
 def check_db_connection():
@@ -497,13 +525,40 @@ def get_offer_by_id(offer_id):
             'timestamp': offer.timestamp,
             'notification_sent': offer.notification_sent,
             'skills_retrieved': offer.skills_retrieved,
-            'discord_message_id': offer.discord_message_id
+            'discord_message_id': offer.discord_message_id,
+            'relevance_score': offer.relevance_score,
+            'relevance_reason': offer.relevance_reason,
+            'filter_processed': offer.filter_processed
         }
     except Exception as e:
         logger.error(f"Error fetching offer by ID {offer_id}: {e}", exc_info=True)
         return None
     finally:
         session.close()
+
+def store_relevance(offer_id, score, reason):
+    """Stores the relevance score/reason for an offer and marks it filter-processed."""
+    session = Session()
+    try:
+        result = session.query(JobOffer)\
+            .filter(JobOffer.offer_id == offer_id)\
+            .update(
+                {
+                    JobOffer.relevance_score: score,
+                    JobOffer.relevance_reason: reason,
+                    JobOffer.filter_processed: True,
+                },
+                synchronize_session=False,
+            )
+        session.commit()
+        return result > 0
+    except Exception as e:
+        logger.error(f"Failed to store relevance for offer ID {offer_id}: {e}", exc_info=True)
+        session.rollback()
+        return False
+    finally:
+        session.close()
+
 
 # New function to update Discord message ID
 def update_discord_message_id(offer_id, message_id):
