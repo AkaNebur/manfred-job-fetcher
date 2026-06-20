@@ -153,6 +153,19 @@ The database is persisted on the host machine in the `./data` directory.
 
 ---
 
+## Running the Tests
+
+The project ships with a `pytest` suite covering the persistence layer, the Discord
+embed formatters and CORS configuration parsing. The tests run against an isolated
+temporary SQLite database and require no network access or Discord webhook.
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+---
+
 ## Building the Docker Image
 
 1. Clone this repository:
