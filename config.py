@@ -49,10 +49,18 @@ class Settings(BaseSettings):
     FILTER_BEHAVIOR: str = "hard"
     RELEVANCE_THRESHOLD: int = 60
 
+    # AI filter (FILTER_MODE='ai'): Claude credentials, model, and the natural-language
+    # profile describing what counts as relevant. AI_USER_PROFILE takes precedence over
+    # the profile file at AI_PROFILE_PATH.
+    ANTHROPIC_API_KEY: str = ""
+    AI_MODEL: str = "claude-haiku-4-5"
+    AI_USER_PROFILE: str = ""
+
     # --- Derived / runtime fields (populated in load_config) ---
     BUILD_ID_HASH: str = ""
     CONFIG_FILE_PATH: str = ""
     FILTER_RULES_PATH: str = ""  # path to the rules-mode criteria JSON file
+    AI_PROFILE_PATH: str = ""    # path to the ai-mode natural-language profile file
 
     # --- Constants (not environment-driven) ---
     SQLALCHEMY_TRACK_MODIFICATIONS: bool = False
@@ -94,6 +102,9 @@ def load_config():
     settings.CONFIG_FILE_PATH = config_file
     settings.FILTER_RULES_PATH = os.getenv(
         "FILTER_RULES_PATH", os.path.join(config_dir, "filter_rules.json")
+    )
+    settings.AI_PROFILE_PATH = os.getenv(
+        "AI_PROFILE_PATH", os.path.join(config_dir, "profile.md")
     )
 
     # 1) Try to load BUILD_ID_HASH from the JSON file first.

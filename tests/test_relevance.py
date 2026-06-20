@@ -107,7 +107,9 @@ def test_dispatch_rules_uses_configured_file(monkeypatch, tmp_path):
     assert result is not None and result["relevant"] is False
 
 
-def test_dispatch_ai_without_backend_returns_none(monkeypatch):
-    # The AI backend module is added in a later change; until then 'ai' degrades to None.
+def test_dispatch_ai_without_api_key_returns_none(monkeypatch):
+    # With no API key, the AI backend can't build a client and degrades to None.
+    import relevance_ai
+    monkeypatch.setattr(relevance_ai, "_get_client", lambda: None)
     monkeypatch.setitem(relevance.CONFIG, "FILTER_MODE", "ai")
     assert relevance.score_offer(_offer(), SKILLS, []) is None

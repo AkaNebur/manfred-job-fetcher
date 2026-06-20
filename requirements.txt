@@ -7,3 +7,4 @@ python-dotenv==1.2.2
 httpx==0.28.1
 APScheduler==3.11.2
 discord-webhook==1.4.1
+anthropic==0.111.0
