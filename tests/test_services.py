@@ -5,6 +5,7 @@ external boundaries: the Manfred HTTP client and the Discord notifier.
 """
 import discord_notifier
 import manfred_api
+import relevance
 import services
 
 
@@ -191,3 +192,69 @@ def test_cleanup_deletes_obsolete_messages(monkeypatch):
     assert deleted_ids == ["msg-1"]
     # Offer 1's message id was cleared, so it is no longer obsolete.
     assert database.get_obsolete_discord_notifications([2]) == []
+
+
+# --- relevance filter wiring -----------------------------------------------
+
+def _enable_filter(monkeypatch, behavior="hard"):
+    monkeypatch.setitem(services.CONFIG, "DISCORD_WEBHOOK_URL", "http://webhook")
+    monkeypatch.setitem(services.CONFIG, "FILTER_MODE", "rules")
+    monkeypatch.setitem(services.CONFIG, "FILTER_BEHAVIOR", behavior)
+    monkeypatch.setitem(services.CONFIG, "RELEVANCE_THRESHOLD", 60)
+
+
+def _capture_sent(monkeypatch):
+    sent = []
+    monkeypatch.setattr(discord_notifier, "send_batch_notifications",
+                        lambda offers, *a, **k: (sent.extend(offers), len(offers))[1])
+    return sent
+
+
+def test_fetch_and_store_hard_filter_excludes_irrelevant(monkeypatch):
+    import database
+    monkeypatch.setattr(manfred_api, "fetch_raw_offers_list", lambda: [_offer(1), _offer(2)])
+    monkeypatch.setattr(manfred_api, "fetch_job_details_data", lambda offer_id, slug: DETAILS_WITH_SKILLS)
+    _enable_filter(monkeypatch, "hard")
+    monkeypatch.setattr(relevance, "score_offer", lambda offer, s, l:
+                        {"relevant": True, "score": 90, "reason": "great"} if offer["id"] == 1
+                        else {"relevant": False, "score": 10, "reason": "nope"})
+    sent = _capture_sent(monkeypatch)
+
+    result = services.fetch_and_store_offers_service()
+
+    assert {o["id"] for o in sent} == {1}          # only the relevant one notified
+    assert result["webhook_sent"] == 1
+    # Both were scored and stored, even though only one was sent.
+    assert database.get_offer_by_id(1)["relevance_score"] == 90
+    assert database.get_offer_by_id(2)["relevance_score"] == 10
+
+
+def test_fetch_and_store_annotate_keeps_all_with_reason(monkeypatch):
+    monkeypatch.setattr(manfred_api, "fetch_raw_offers_list", lambda: [_offer(1), _offer(2)])
+    monkeypatch.setattr(manfred_api, "fetch_job_details_data", lambda offer_id, slug: DETAILS_WITH_SKILLS)
+    _enable_filter(monkeypatch, "annotate")
+    # Below threshold for both — annotate must still keep them.
+    monkeypatch.setattr(relevance, "score_offer", lambda offer, s, l: {"relevant": False, "score": 10, "reason": "meh"})
+    sent = _capture_sent(monkeypatch)
+
+    services.fetch_and_store_offers_service()
+
+    assert {o["id"] for o in sent} == {1, 2}
+    assert all(o.get("relevance_reason") == "meh" for o in sent)
+
+
+def test_send_pending_respects_hard_filter(monkeypatch):
+    import database
+    database.store_or_update_offers([_offer(1), _offer(2)])
+    database.store_job_skills(1, {"must": [{"skill": "Python", "level": 3}], "nice": [], "extra": []})
+    database.store_job_skills(2, {"must": [{"skill": "PHP", "level": 3}], "nice": [], "extra": []})
+    _enable_filter(monkeypatch, "hard")
+    monkeypatch.setattr(relevance, "score_offer", lambda offer, s, l:
+                        {"relevant": True, "score": 90, "reason": "ok"} if offer["id"] == 1
+                        else {"relevant": False, "score": 5, "reason": "no"})
+    sent = _capture_sent(monkeypatch)
+
+    offers_sent, _ = services.send_pending_notifications_service(limit=5)
+
+    assert {o["id"] for o in sent} == {1}
+    assert offers_sent == 1

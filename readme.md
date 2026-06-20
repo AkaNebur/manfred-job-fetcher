@@ -76,6 +76,12 @@ The application is configured using environment variables when running the Docke
 | `RETRY_BACKOFF`           | Backoff factor for retries                 | `0.5`                                                                   |
 | `CORS_ALLOW_ORIGINS`      | Comma-separated allowed CORS origins (`*` allows all; credentials are only enabled when explicit origins are set) | `*` |
 | `SQLALCHEMY_ECHO`         | Log all SQL statements (development only)  | `false`                                                                |
+| `FILTER_MODE`             | Relevance filter: `off` / `rules` / `ai`   | `off`                                                                  |
+| `FILTER_BEHAVIOR`         | `hard` (only relevant) / `annotate` (tag)  | `hard`                                                                 |
+| `RELEVANCE_THRESHOLD`     | Minimum score (0-100) to notify in `hard`  | `60`                                                                   |
+| `ANTHROPIC_API_KEY`       | Claude API key (for `FILTER_MODE=ai`)      | empty                                                                  |
+| `AI_MODEL`                | Claude model for AI scoring                | `claude-haiku-4-5`                                                     |
+| `AI_USER_PROFILE`         | Natural-language relevance profile (`ai`)  | empty                                                                  |
 | `FLASK_DEBUG`             | Enable auto-reload when running directly   | `0`                                                                    |
 
 You can define these in a `.env` file.
@@ -172,6 +178,32 @@ The application uses SQLite with the following tables:
 3. **job_skills**: Stores skills requirements for each job (must, nice, extra categories)
 
 The database is persisted on the host machine in the `./data` directory.
+
+---
+
+## Relevance Filter (AI / rules)
+
+Optionally score each new offer for relevance so only the ones you care about reach
+Discord. Controlled by `FILTER_MODE`:
+
+- **`off`** (default) — no filtering; every offer with skills is notified.
+- **`rules`** — a deterministic **criteria questionnaire**, no API needed. Copy
+  `filter_rules.sample.json` to `data/config/filter_rules.json` and edit it (minimum
+  salary, minimum remote %, required/excluded skills, excluded companies, position
+  include/exclude terms, allowed locations).
+- **`ai`** — Claude scores each offer against a **natural-language profile**. Set
+  `ANTHROPIC_API_KEY`, optionally `AI_MODEL` (default `claude-haiku-4-5`), and your
+  profile in `AI_USER_PROFILE` or `data/config/profile.md`, e.g. *"Senior backend,
+  Python/Go, 100% remote, salary >45k. Not interested in consultancies or PHP-only roles."*
+
+`FILTER_BEHAVIOR` decides what happens with the score:
+
+- **`hard`** — only offers scoring at or above `RELEVANCE_THRESHOLD` (default 60) are
+  notified; the rest are stored but skipped.
+- **`annotate`** — all offers are notified, with the score and reason shown in the embed.
+
+Each offer is scored once (the verdict is cached in the database), and if scoring is
+unavailable or fails the app falls back to notifying rather than dropping offers.
 
 ---
 
