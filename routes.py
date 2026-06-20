@@ -27,7 +27,7 @@ router = APIRouter()
     description="Directly fetches and returns the JSON response from the configured EXTERNAL_ENDPOINT_URL without processing or saving.",
     response_description="Raw list of active job offers from the external API.",
     tags=["Raw Data"])
-async def get_raw_offers():
+def get_raw_offers():
     logger.info("Route: GET /raw-offers")
     try:
         # Use the API function directly for raw data
@@ -62,7 +62,7 @@ async def get_raw_offers():
     description="Orchestrates fetching offers, storing new/updating existing ones, attempting to fetch skills for new offers, and sending Discord notifications for new offers.",
     response_description="Summary of actions performed.",
     tags=["Data Storage & Processing"])
-async def store_offers_route():
+def store_offers_route():
     logger.info("Route: POST /store-offers")
     try:
         result = services.fetch_and_store_offers_service()
@@ -88,7 +88,7 @@ async def store_offers_route():
     description="Finds job offers marked as needing skills details, fetches their data from the Manfred API, stores the extracted skills, and marks the offer as processed.",
     response_description="Information about the processing batch.",
     tags=["Data Processing"])
-async def process_job_details_route(request: ProcessLimitRequest = Body(default=ProcessLimitRequest())):
+def process_job_details_route(request: ProcessLimitRequest = Body(default=ProcessLimitRequest())):
     logger.info("Route: POST /process-job-details")
     try:
         limit = request.limit
@@ -116,7 +116,7 @@ async def process_job_details_route(request: ProcessLimitRequest = Body(default=
     description="Retrieves the stored skills information and language requirements for a given job offer ID.",
     response_description="Job skills and language requirements.",
     tags=["Data Retrieval"])
-async def get_job_skills_route(offer_id: int = Path(..., description="The unique ID of the job offer")):
+def get_job_skills_route(offer_id: int = Path(..., description="The unique ID of the job offer")):
     logger.info(f"Route: GET /job-skills/{offer_id}")
     try:
         result = services.get_job_skills_service(offer_id)
@@ -148,7 +148,7 @@ async def get_job_skills_route(offer_id: int = Path(..., description="The unique
     description="Checks the database for job offers where 'notification_sent' is false, attempts to send them to the configured Discord webhook, and updates their status in the database.",
     response_description="Information about notifications sent.",
     tags=["Notifications"])
-async def send_pending_notifications_route(request: ProcessLimitRequest = Body(default=ProcessLimitRequest(limit=5))):
+def send_pending_notifications_route(request: ProcessLimitRequest = Body(default=ProcessLimitRequest(limit=5))):
     logger.info("Route: POST /send-notifications")
     if not services.CONFIG['DISCORD_WEBHOOK_URL']:
         logger.warning("Route: /send-notifications called but DISCORD_WEBHOOK_URL is not set.")
@@ -182,7 +182,7 @@ async def send_pending_notifications_route(request: ProcessLimitRequest = Body(d
     description="Attempts to fetch and update the BUILD_ID_HASH from the Manfred website.",
     response_description="Result of the hash update operation.",
     tags=["System"])
-async def update_build_hash_route():
+def update_build_hash_route():
     logger.info("Route: PUT /update-build-hash")
     try:
         # Import the function from manfred_api
@@ -226,7 +226,7 @@ async def update_build_hash_route():
     description="Checks essential components like database connectivity and returns the overall health status.",
     response_description="System health status.",
     tags=["System"])
-async def health_check_route():
+def health_check_route():
     logger.debug("Route: GET /health")
     try:
         health_status_data, is_healthy = services.get_health_status_service()
@@ -253,7 +253,7 @@ async def health_check_route():
     description="Deletes Discord messages for job offers that are no longer active.",
     response_description="Information about the cleanup operation.",
     tags=["Notifications"])
-async def cleanup_notifications_route():
+def cleanup_notifications_route():
     logger.info("Route: DELETE /cleanup-notifications")
     if not services.CONFIG['DISCORD_WEBHOOK_URL']:
         logger.warning("Route: /cleanup-notifications called but DISCORD_WEBHOOK_URL is not set.")
