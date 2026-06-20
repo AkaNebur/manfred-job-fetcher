@@ -111,10 +111,17 @@ app = FastAPI(
 )
 
 # Add CORS middleware
+# Origins are configurable via CORS_ALLOW_ORIGINS. Note: the wildcard "*" and
+# allow_credentials=True are mutually exclusive per the CORS spec (browsers reject
+# that combination), so credentials are only enabled when explicit origins are set.
+cors_origins = CONFIG['CORS_ALLOW_ORIGINS']
+allow_all_origins = cors_origins == ["*"]
+if allow_all_origins:
+    logger.warning("CORS is configured to allow all origins ('*'). Set CORS_ALLOW_ORIGINS for production.")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins in development
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=not allow_all_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

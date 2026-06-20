@@ -75,6 +75,10 @@ def load_config():
         'CONFIG_FILE_PATH': config_file,  # Save the path for future updates
         'RESET_DB': os.getenv('RESET_DB', 'false').lower() in ('true', '1', 't'),
         'FETCH_INTERVAL': int(os.getenv('FETCH_INTERVAL', '3600')),  # Default to 1 hour (3600 seconds)
+
+        # CORS: comma-separated list of allowed origins. Defaults to "*" (all origins).
+        # Use explicit origins (e.g. "https://app.example.com") in production.
+        'CORS_ALLOW_ORIGINS': [o.strip() for o in os.getenv('CORS_ALLOW_ORIGINS', '*').split(',') if o.strip()],
         
         # SQLAlchemy specific settings
         'SQLALCHEMY_ECHO': os.getenv('SQLALCHEMY_ECHO', 'false').lower() in ('true', '1', 't'),
